@@ -13,6 +13,10 @@
 //   2. file://  — the "double-click index.html" scenario (fixtures are embedded
 //                 as base64, because pages may not fetch file:// resources).
 //
+// It also drives the row-preview card: the standard fixture clicks "Last"
+// (post-drop `act` hook) and asserts the caption/values switch to row 2,
+// which is served from the last-row decode cached during loadFile.
+//
 // Override the browser binary with the CHROME_PATH env var if needed.
 // Exit codes: 0 = all assertions passed, 1 = failure, 2 = no browser found.
 
@@ -207,6 +211,9 @@ const DOM_SNAPSHOT = `(() => {
     fvCount: qsa("#results .fvcell").length,
     fvFirst: q("#results .fvcell .v") ? q("#results .fvcell .v").textContent : null,
     fvLast: qsa("#results .fvcell .v").length ? t(qsa("#results .fvcell .v").slice(-1)[0]) : null,
+    fvCaption: t(q("#results .fvcap")),
+    hasRowJump: q("#results #lastRowBtn") !== null,
+    rowInput: q("#results #rowInput") ? q("#results #rowInput").value : null,
     errMsg: t(q("#results .errorcard .msg")),
     warnText: t(q("#results .warn")),
     listRows: qsa("#results table.ptable tr").map(t).filter((x) => x.includes("list uchar int")),
@@ -235,6 +242,27 @@ const DOM_SNAPSHOT = `(() => {
   };
 })()`;
 
+// Clicks the row-preview card's "Last" button, then waits (up to 8 s) for the
+// caption to stop saying "Reading row N …" and resolves with the full DOM
+// snapshot. Last-row loads resolve synchronously when s.lastRow is cached,
+// but an uncached load goes through decodeRowAt's real file.slice() await —
+// the wait loop keeps the test honest on either path.
+const CLICK_LAST_ROW = `(() => {
+  const btn = document.querySelector("#results #lastRowBtn");
+  if (!btn) return "NO_LAST_ROW_BTN";
+  btn.click();
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const cap = document.querySelector("#results .fvcap");
+      const txt = cap ? cap.textContent : "";
+      if (!txt.toLowerCase().includes("reading") || Date.now() - t0 > 8000) resolve(${DOM_SNAPSHOT});
+      else setTimeout(tick, 25);
+    };
+    tick();
+  });
+})()`;
+
 // ---------------- assertion bookkeeping ----------------
 let pass = 0, fail = 0;
 const failures = [];
@@ -247,20 +275,34 @@ function check(label, cond, detail) {
 const scenariosHttp = [
   {
     name: "3dgs_standard.ply",
-    expect: (d) => {
+    act: (evalJs) => evalJs(CLICK_LAST_ROW),
+    expect: (d, a) => {
       check("standard: status reports inspected", d.status.startsWith("Inspected"), d.status);
       check("standard: green 59/59 badge with label", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
       check("standard: size check matches actual", d.badges.some((b) => b.startsWith("size: expected") && b.includes("matches actual")), d.badges);
+      check("standard: green tail badge (last row intact)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
       check("standard: 59 property rows", d.vertexRows === 59, d.vertexRows);
       check("standard: vertex card title", d.cardTitles.includes("Vertex properties vertex (59)"), d.cardTitles);
       const req = d.fams.filter((f) => !f.includes("optional"));
       check("standard: 6 required family rows, all complete", req.length === 6 && req.every((f) => f.startsWith("✓ complete")), d.fams);
-      check("standard: optional normal row shown as absent (gray, not an error)", d.famOpt.length === 1 && d.famOpt[0].startsWith("– absent") && d.famOpt[0].includes("normal") && d.famOpt[0].includes("optional"), d.famOpt);
-      check("standard: no optional summary badge (0/3 is not notable)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
-      check("standard: first vertex decoded (59 cells)", d.fvCount === 59, d.fvCount);
-      check("standard: first-vertex x = 0 (row 0 value)", d.fvFirst === "0", d.fvFirst);
-      check("standard: first-vertex rot_3 = 58 (last value)", d.fvLast === "58", d.fvLast);
+      check("standard: 8 checklist rows (6 required + 2 optional)", d.fams.length === 8, d.fams);
+      check("standard: both optional rows absent (normal + material)", d.famOpt.length === 2 && d.famOpt[0].startsWith("– absent") && d.famOpt[0].includes("normal") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
+      check("standard: no optional summary badge (0/5 is not notable)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
+      check("standard: row-jump controls present (input at 0)", d.hasRowJump === true && d.rowInput === "0", { hasRowJump: d.hasRowJump, rowInput: d.rowInput });
+      check("standard: caption is row 0 of 3", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 3"), d.fvCaption);
+      check("standard: first row decoded (59 cells)", d.fvCount === 59, d.fvCount);
+      check("standard: row 0 x = 0", d.fvFirst === "0", d.fvFirst);
+      check("standard: row 0 rot_3 = 58 (last value)", d.fvLast === "58", d.fvLast);
       check("standard: no warnings card", d.warnText === null, d.warnText);
+      // After clicking "Last": row 2 (value = r*100 + i), served from the
+      // cached s.lastRow decoded during loadFile.
+      check("standard: post-act snapshot is an object", a && typeof a === "object", a);
+      if (a && typeof a === "object") {
+        check("standard: post-act caption is row 2 of 3", a.fvCaption !== null && a.fvCaption.startsWith("Row 2 of 3"), a.fvCaption);
+        check("standard: last row x = 200", a.fvFirst === "200", a.fvFirst);
+        check("standard: last row rot_3 = 258", a.fvLast === "258", a.fvLast);
+        check("standard: last row fully decoded (59 cells)", a.fvCount === 59, a.fvCount);
+      }
     },
   },
   {
@@ -269,7 +311,9 @@ const scenariosHttp = [
       check("near: amber 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges);
       check("near: 25 property rows", d.vertexRows === 25, d.vertexRows);
       check("near: sh_rest partial with missing list", d.fams.some((f) => f.includes("SH rest") && f.includes("partial") && f.includes("missing: f_rest_11")), d.fams);
-      check("near: 7 checklist rows (6 required + optional normal)", d.fams.length === 7 && d.famOpt.length === 1, d.fams);
+      check("near: 8 checklist rows (6 required + 2 optional)", d.fams.length === 8 && d.famOpt.length === 2, d.fams);
+      check("near: both optional rows absent (normal + material)", d.famOpt[0].includes("normal") && d.famOpt[1].includes("material"), d.famOpt);
+      check("near: green tail badge (both rows present)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
       check("near: no standard badge", !d.badges.some((b) => b.includes("standard signature")), d.badges);
     },
   },
@@ -278,21 +322,23 @@ const scenariosHttp = [
     expect: (d) => {
       check("normals: status reports inspected", d.status.startsWith("Inspected"), d.status);
       check("normals: standard 59/59 badge (required count unchanged)", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
-      check("normals: green optional badge 3/3", d.badges.some((b) => b === "optional: normal 3/3"), d.badges);
+      check("normals: amber optional badge (normal 3/3, material 0/2)", d.badges.some((b) => b === "optional: normal 3/3, material 0/2"), d.badges);
       check("normals: 62 property rows", d.vertexRows === 62, d.vertexRows);
-      check("normals: 7 checklist rows, optional normal row complete", d.fams.length === 7 && d.famOpt.length === 1 && d.famOpt[0].startsWith("✓ complete") && d.famOpt[0].includes("normal"), d.famOpt);
-      check("normals: first vertex decoded (62 cells)", d.fvCount === 62, d.fvCount);
-      check("normals: first-vertex last value = 61 (rot_3)", d.fvLast === "61", d.fvLast);
+      check("normals: 8 checklist rows; normal complete, material absent", d.fams.length === 8 && d.famOpt.length === 2 && d.famOpt[0].startsWith("✓ complete") && d.famOpt[0].includes("normal") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
+      check("normals: first row decoded (62 cells)", d.fvCount === 62, d.fvCount);
+      check("normals: row 0 last value = 61 (rot_3)", d.fvLast === "61", d.fvLast);
       check("normals: size matches actual (248 B/row)", d.badges.some((b) => b.startsWith("size: expected") && b.includes("matches actual")), d.badges);
+      check("normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
     },
   },
   {
     name: "3dgs_normals_partial.ply",
     expect: (d) => {
       check("partial normals: standard badge stays", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
-      check("partial normals: amber optional badge 1/3", d.badges.some((b) => b === "optional: normal 1/3"), d.badges);
+      check("partial normals: amber optional badge (normal 1/3, material 0/2)", d.badges.some((b) => b === "optional: normal 1/3, material 0/2"), d.badges);
       check("partial normals: 60 property rows", d.vertexRows === 60, d.vertexRows);
-      check("partial normals: optional row partial with missing list", d.famOpt.length === 1 && d.famOpt[0].includes("partial") && d.famOpt[0].includes("missing: ny, nz"), d.famOpt);
+      check("partial normals: normal row partial with missing list, material absent", d.famOpt.length === 2 && d.famOpt[0].includes("partial") && d.famOpt[0].includes("missing: ny, nz") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
+      check("partial normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
     },
   },
   {
@@ -302,7 +348,9 @@ const scenariosHttp = [
       check("weird props: warnings card shown", d.warnText !== null, d.warnText);
       check("weird props: 4 vertex property rows", d.vertexRows === 4, d.vertexRows);
       check("weird props: other-elements summary uses '?' placeholders, never 'null'", d.otherSummary !== null && d.otherSummary.includes("list ? ? ?") && !d.otherSummary.includes("null"), d.otherSummary);
-      check("weird props: first vertex partial (2 cells before the bad list)", d.fvCount === 2, d.fvCount);
+      check("weird props: first row partial (2 cells before the bad list)", d.fvCount === 2, d.fvCount);
+      check("weird props: gray tail n/a badge (list rows)", d.badges.some((b) => b === "tail: n/a (variable-length rows)"), d.badges);
+      check("weird props: no row-jump controls", d.hasRowJump === false, d.hasRowJump);
     },
   },
   {
@@ -326,6 +374,20 @@ const scenariosHttp = [
     expect: (d) => {
       check("truncated: red truncated badge", d.badges.some((b) => b.startsWith("size: truncated")), d.badges);
       check("truncated: still renders the vertex table", d.vertexRows === 1, d.vertexRows);
+      check("truncated: red tail badge (last row missing)", d.badges.some((b) => b === "tail: ✗ last row missing — body ends before it"), d.badges);
+      check("truncated: row-jump controls still present", d.hasRowJump === true, d.hasRowJump);
+      check("truncated: caption is row 0 of 3", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 3"), d.fvCaption);
+    },
+  },
+  {
+    name: "tail_midrow.ply",
+    expect: (d) => {
+      check("midrow: status reports inspected", d.status.startsWith("Inspected"), d.status);
+      check("midrow: size check flags truncation", d.badges.some((b) => b.startsWith("size: truncated")), d.badges);
+      check("midrow: red partial-tail badge (2 of 4 bytes)", d.badges.some((b) => b === "tail: ✗ last row partial (2 of 4 bytes)"), d.badges);
+      check("midrow: row-jump controls present", d.hasRowJump === true, d.hasRowJump);
+      check("midrow: caption is row 0 of 2", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 2"), d.fvCaption);
+      check("midrow: row 0 x = 1", d.fvFirst === "1", d.fvFirst);
     },
   },
   {
@@ -335,6 +397,8 @@ const scenariosHttp = [
       check("ascii: Other elements card", d.cardTitles.includes("Other elements (1)"), d.cardTitles);
       check("ascii: no 3DGS badge", !d.badges.some((b) => b.includes("3DGS")), d.badges);
       check("ascii: list property row present", d.listRows.length === 1, d.listRows);
+      check("ascii: no tail badge (binary rows only)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
+      check("ascii: no row preview card", d.fvCaption === null && d.hasRowJump === false, { fvCaption: d.fvCaption, hasRowJump: d.hasRowJump });
     },
   },
   {
@@ -349,7 +413,7 @@ const scenariosHttp = [
 const scenariosFile = [
   { name: "3dgs_standard.ply", embed: true, expect: (d) => check("file:// standard: 59/59 badge", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges) },
   { name: "3dgs_missing_rest.ply", embed: true, expect: (d) => check("file:// near: 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges) },
-  { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + optional 3/3 badge", d.vertexRows === 62 && d.badges.some((b) => b === "optional: normal 3/3"), { rows: d.vertexRows, badges: d.badges }) },
+  { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + optional badge (normal 3/3, material 0/2)", d.vertexRows === 62 && d.badges.some((b) => b === "optional: normal 3/3, material 0/2"), { rows: d.vertexRows, badges: d.badges }) },
   { name: "bad_magic.ply", embed: true, expect: (d) => check("file:// bad magic: error card", d.errMsg !== null, d.errMsg) },
 ];
 
@@ -398,9 +462,13 @@ async function main() {
     for (const s of scenariosHttp) {
       console.log(`\ndrop ${s.name}`);
       const d = await dropFixture(s.name, null);
-      s.expect(d);
+      let a = null;
+      if (s.act) a = await s.act(evalJs); // optional post-drop action (row jump)
+      s.expect(d, a);
       // Global regression guard: the user-reported "bare null on the page" bug.
       check(`${s.name}: no null/undefined text rendered`, d.nullText.length === 0, d.nullText);
+      if (a && typeof a === "object")
+        check(`${s.name}: no null/undefined text after row jump`, a.nullText.length === 0, a.nullText);
     }
 
     // ---- origin 2: file:// (double-click scenario) ----

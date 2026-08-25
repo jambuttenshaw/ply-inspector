@@ -98,7 +98,7 @@ const P = loadInspector();
 // ---------------------------------------------------------------------------
 test("exports: PLYInspector surface is complete", () => {
   assertEq(P.version, undefined, "no version pin in v1 core (kept dynamic)");
-  for (const k of ["TYPES", "SIGNATURES", "parseHeader", "expectedSize", "sizeCheck", "detect3DGS", "decodeRow"])
+  for (const k of ["TYPES", "SIGNATURES", "parseHeader", "expectedSize", "sizeCheck", "detect3DGS", "decodeRow", "rowJumpInfo", "tailCheckInfo", "decodeRowAt"])
     assert(P[k], `missing export: ${k}`);
   assertEq(Object.keys(P.TYPES).length, 16, "16 type tokens");
   assertEq(P.TYPES.float.normalized, "float32");
@@ -148,7 +148,7 @@ test("3dgs_standard: 3DGS badge, complete required families, normal optional abs
   assertEq(s.matched, 59);
   assertEq(s.total, 59);
   assertEq(s.optionalMatched, 0);
-  assertEq(s.optionalTotal, 3);
+  assertEq(s.optionalTotal, 5, "optional: normal 3 + material 2");
   assertEq(s.extras.length, 0);
   const required = s.families.filter((f) => !f.optional);
   assertEq(required.length, 6);
@@ -156,6 +156,10 @@ test("3dgs_standard: 3DGS badge, complete required families, normal optional abs
   const normal = s.families.find((f) => f.key === "normal");
   assertEq(normal.optional, true);
   assertEq(normal.missing.length, 3, "absent optionals are reported, not errors");
+  const material = s.families.find((f) => f.key === "material");
+  assertEq(material.optional, true);
+  assertEq(material.missing.length, 2, "absent optionals are reported, not errors");
+  assert(!s.familyOf["metallicFactor"], "absent optional not grouped");
   assertEq(s.familyOf["f_rest_44"], "sh_rest");
   assertEq(s.familyOf["rot_3"], "rotation");
   assertEq(s.familyOf["x"], "position");
@@ -163,15 +167,16 @@ test("3dgs_standard: 3DGS badge, complete required families, normal optional abs
   assertEq(Object.keys(s.familyOf).length, 59);
 });
 
-test("SIGNATURES: one optional family (normal nx/ny/nz); required total stays 59", () => {
+test("SIGNATURES: two optional families (normal, material); required total stays 59", () => {
   const sig = P.SIGNATURES["3dgs-standard"];
-  assertEq(sig.families.length, 7);
+  assertEq(sig.families.length, 8);
   const opt = sig.families.filter((f) => f.optional);
-  assertEq(opt.length, 1, "exactly one optional family");
+  assertEq(opt.length, 2, "exactly two optional families");
   assertDeepEq(opt[0].props, ["nx", "ny", "nz"]);
+  assertDeepEq(opt[1].props, ["metallicFactor", "roughnessFactor"]);
   const requiredProps = sig.families.filter((f) => !f.optional).flatMap((f) => f.props);
   assertEq(requiredProps.length, 59, "59 required props");
-  assertEq(new Set(sig.families.flatMap((f) => f.props)).size, 62, "62 distinct signature props (59 + 3)");
+  assertEq(new Set(sig.families.flatMap((f) => f.props)).size, 64, "64 distinct signature props (59 + 3 + 2)");
 });
 
 test("3dgs_standard: first-row decode (LE float32), rows 0 and 1", () => {
@@ -211,7 +216,7 @@ test("3dgs_with_normals: 62 props, 248 B/row, standard + optional 3/3, no extras
   assertEq(s.matched, 59);
   assertEq(s.total, 59, "matched/total stay required-only");
   assertEq(s.optionalMatched, 3);
-  assertEq(s.optionalTotal, 3);
+  assertEq(s.optionalTotal, 5, "optional: normal 3 + material 2");
   assertEq(s.extras.length, 0, "nx/ny/nz are signature props, not extras");
   const normal = s.families.find((f) => f.key === "normal");
   assertDeepEq(normal.found, ["nx", "ny", "nz"]);
@@ -247,7 +252,7 @@ test("3dgs_normals_partial: standard + partial optional (1/3), badge stays stand
   assertEq(s.isStandard, true);
   assertEq(s.matched, 59);
   assertEq(s.optionalMatched, 1);
-  assertEq(s.optionalTotal, 3);
+  assertEq(s.optionalTotal, 5, "optional: normal 3 + material 2");
   assertEq(s.extras.length, 0);
   const normal = s.families.find((f) => f.key === "normal");
   assertDeepEq(normal.found, ["nx"]);
@@ -500,6 +505,102 @@ test("decodeRow: truncation (short list / short row / empty buffer)", () => {
   const re = P.decodeRow(empty, listElement(), false);
   assertEq(re.complete, false);
   assertEq(re.values.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// row-N preview & tail check
+// ---------------------------------------------------------------------------
+test("rowJumpInfo: standard 3DGS vertex is jumpable (236 B/row)", () => {
+  const h = P.parseHeader(fx("3dgs_standard.ply"));
+  const j = P.rowJumpInfo(h.elements[0]);
+  assertEq(j.jumpable, true);
+  assertEq(j.rowBytes, 236);
+  assertEq(j.reason, null);
+});
+
+test("rowJumpInfo: list properties are not jumpable; sibling element unaffected", () => {
+  const h = P.parseHeader(fx("ascii_mesh.ply"));
+  const face = P.rowJumpInfo(h.elements[1]);
+  assertEq(face.jumpable, false);
+  assertEq(face.reason, "variable-length rows");
+  assertEq(P.rowJumpInfo(h.elements[0]).jumpable, true, "vertex element of same file (no lists) IS jumpable");
+});
+
+test("rowJumpInfo: unknown types and bad counts are not jumpable", () => {
+  const weird = P.rowJumpInfo(P.parseHeader(fx("weird_props.ply")).elements[0]);
+  assertEq(weird.jumpable, false);
+  assertEq(weird.reason, "variable-length rows", "list check precedes unknown check");
+  const hdr = Buffer.from(
+    "ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty quantum x\nend_header\n", "utf8");
+  const j2 = P.rowJumpInfo(P.parseHeader(hdr).elements[0]);
+  assertEq(j2.jumpable, false);
+  assertEq(j2.reason, "unknown property types");
+  const prop = { name: "x", isList: false, type: P.TYPES.float, normalized: "float32", bytes: 4, fixedBytes: 4, unknown: false };
+  assertEq(P.rowJumpInfo({ name: "v", count: 0, properties: [prop] }).reason, "no rows");
+  assertEq(P.rowJumpInfo({ name: "v", count: -2, properties: [prop] }).reason, "no rows");
+  assertEq(P.rowJumpInfo({ name: "v", count: NaN, properties: [prop] }).reason, "non-finite count");
+});
+
+test("rowJumpInfo: big-endian rows jump with the BE row size", () => {
+  const h = P.parseHeader(fx("big_endian.ply"));
+  const j = P.rowJumpInfo(h.elements[0]);
+  assertEq(j.jumpable, true);
+  assertEq(j.rowBytes, 13);
+});
+
+test("tailCheckInfo: exact file -> ok, with exact last-row offset", () => {
+  const buf = fx("3dgs_standard.ply");
+  const h = P.parseHeader(buf);
+  const el = h.elements[0];
+  const j = P.rowJumpInfo(el);
+  const t = P.tailCheckInfo(j.rowBytes, el.count, buf.length, h.headerByteLength);
+  assertEq(t.status, "ok");
+  assertEq(t.offset, h.headerByteLength + 2 * 236, "last of 3 rows");
+  assertEq(t.available, 236);
+  assertEq(t.need, 236);
+});
+
+test("tailCheckInfo: truncated_body (last row entirely absent) -> missing", () => {
+  const buf = fx("truncated_body.ply");
+  const h = P.parseHeader(buf);
+  const el = h.elements[0];
+  const j = P.rowJumpInfo(el);
+  const t = P.tailCheckInfo(j.rowBytes, el.count, buf.length, h.headerByteLength);
+  assertEq(t.status, "missing");
+  assertEq(t.available, 0);
+  assertEq(t.need, 4);
+});
+
+test("tailCheckInfo: tail_midrow (body ends mid-row) -> truncated-row", () => {
+  const buf = fx("tail_midrow.ply");
+  const h = P.parseHeader(buf);
+  const el = h.elements[0];
+  const j = P.rowJumpInfo(el);
+  const t = P.tailCheckInfo(j.rowBytes, el.count, buf.length, h.headerByteLength);
+  assertEq(t.status, "truncated-row");
+  assertEq(t.available, 2, "2 stray bytes present");
+  assertEq(t.need, 4);
+});
+
+test("last-row decode: row 2 of 3dgs_standard decodes exactly (value = r*100 + i)", () => {
+  const buf = fx("3dgs_standard.ply");
+  const h = P.parseHeader(buf);
+  const body = buf.subarray(h.headerByteLength);
+  const j = P.rowJumpInfo(h.elements[0]);
+  const r = P.decodeRow(body.subarray(2 * j.rowBytes), h.elements[0], false);
+  assertEq(r.complete, true);
+  assertEq(r.values[0].value, 200, "row2 x");
+  assertEq(r.values[58].value, 258, "row2 rot_3");
+  assertEq(r.bytesRead, 236);
+});
+
+test("last-row decode on tail_midrow: partial row is incomplete, decodes nothing", () => {
+  const buf = fx("tail_midrow.ply");
+  const h = P.parseHeader(buf);
+  const body = buf.subarray(h.headerByteLength);
+  const r = P.decodeRow(body.subarray(4), h.elements[0], false);
+  assertEq(r.complete, false);
+  assertEq(r.values.length, 0, "2 bytes is not even one float32");
 });
 
 // ---------------------------------------------------------------------------

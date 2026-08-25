@@ -340,6 +340,27 @@ W("bad_format.ply", Buffer.from(
   W("truncated_body.ply", Buffer.concat([Buffer.from(header, "utf8"), b]));
 }
 
+// ---------------------------------------------------------------------------
+// tail_midrow.ply — header claims 2 rows, body ends MID-ROW: one full row
+// (4 B) + 2 stray bytes. The tail check must flag "truncated-row"
+// (2 available of 4 needed); the size check independently flags truncation.
+// ---------------------------------------------------------------------------
+{
+  const header = headerOf([
+    "ply",
+    "format binary_little_endian 1.0",
+    "comment body ends mid-row — tail check must flag truncated-row",
+    "element vertex 2",
+    "property float x",
+    "end_header",
+  ]);
+  const b = Buffer.alloc(6); // 1 full row (4 B) + 2 stray bytes
+  b.writeFloatLE(1, 0);
+  b.writeUInt8(0x3f, 4);
+  b.writeUInt8(0x08, 5);
+  W("tail_midrow.ply", Buffer.concat([Buffer.from(header, "utf8"), b]));
+}
+
 // Clean up the M0 placeholder.
 rmSync(join(outDir, "placeholder.ply"), { force: true });
 

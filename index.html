@@ -180,6 +180,13 @@
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn:active { transform: translateY(1px); }
   .actions { display: flex; gap: 8px; margin-left: auto; }
+  .rowjump input[type="number"] {
+    width: 90px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .rowjump label { color: var(--muted); font-size: 12px; }
+  .rowjump:focus-within input[type="number"] { border-color: var(--accent); }
 
   .note { color: var(--faint); font-size: 12px; }
   .muted { color: var(--muted); }
@@ -645,11 +652,68 @@
     return { element: el.name, displayName: header.elementDisplay[0], values: row.values, complete: row.complete, bytesRead: row.bytesRead };
   }
 
+  // --- row-N preview & tail check ------------------------------------------
+  // rowJumpInfo(element) -> {jumpable, rowBytes, reason}
+  // A jump to row N is only possible when every row has the same known size:
+  // finite positive count, no list properties (variable-length rows), and no
+  // unknown types (they contribute 0 bytes and would misalign every jump).
+  // Row-bytes math mirrors rowLayout/expectedSize.
+  function rowJumpInfo(element) {
+    const rowBytes = element && element.properties
+      ? element.properties.reduce((n, p) => n + (p.isList ? 0 : p.bytes || 0), 0)
+      : 0;
+    if (!element) return { jumpable: false, rowBytes: 0, reason: "no rows" };
+    if (!Number.isFinite(element.count)) return { jumpable: false, rowBytes, reason: "non-finite count" };
+    if (element.count <= 0) return { jumpable: false, rowBytes, reason: "no rows" };
+    if (element.properties.some((p) => p.isList)) return { jumpable: false, rowBytes, reason: "variable-length rows" };
+    if (element.properties.some((p) => p.unknown)) return { jumpable: false, rowBytes, reason: "unknown property types" };
+    if (rowBytes <= 0) return { jumpable: false, rowBytes, reason: "zero row size" };
+    return { jumpable: true, rowBytes, reason: null };
+  }
+
+  // tailCheckInfo(rowBytes, count, fileSize, headerByteLength)
+  //   -> {status, offset, available, need}
+  // The last claimed row starts at offset = header + (count-1)*rowBytes. For
+  // jumpable rows, byte availability IS completeness:
+  //   no bytes at offset        -> "missing"       (body ends before the last row)
+  //   fewer bytes than rowBytes -> "truncated-row" (body ends mid-row)
+  //   otherwise                 -> "ok"
+  function tailCheckInfo(rowBytes, count, fileSize, headerByteLength) {
+    const offset = headerByteLength + (count - 1) * rowBytes;
+    const available = Math.max(0, fileSize - offset);
+    const status = available <= 0 ? "missing" : available < rowBytes ? "truncated-row" : "ok";
+    return { status, offset, available, need: rowBytes };
+  }
+
+  // Browser-only: bounded read of row N of the first element — one slice,
+  // capped at max(64 KB, rowBytes), same window discipline as
+  // decodeFirstVertex. Returns null when not jumpable, when the index is
+  // out of range, or when no bytes remain at the row offset.
+  async function decodeRowAt(file, header, rowIndex) {
+    const el = header.elements[0];
+    if (!el || header.format.kind === "ascii") return null;
+    const jump = rowJumpInfo(el);
+    if (!jump.jumpable) return null;
+    if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= el.count) return null;
+    const off = header.headerByteLength + rowIndex * jump.rowBytes;
+    const end = Math.min(file.size, off + Math.max(64 * 1024, jump.rowBytes));
+    if (end <= off) return null;
+    const buf = new Uint8Array(await file.slice(off, end).arrayBuffer());
+    const bigEndian = header.format.kind === "binary_big_endian";
+    const row = decodeRow(buf, el, bigEndian);
+    return {
+      rowIndex, element: el.name, displayName: header.elementDisplay[0],
+      values: row.values, complete: row.complete, bytesRead: row.bytesRead,
+      offset: off, rowBytes: jump.rowBytes,
+    };
+  }
+
   // --- export surface for tests / console use ---
   const PLY = {
     TYPES, SIGNATURES,
     parseHeader, expectedSize, sizeCheck, detect3DGS,
     decodeRow, decodeFirstVertex,
+    rowJumpInfo, tailCheckInfo, decodeRowAt,
     PlyError,
   };
   globalThis.PLYInspector = PLY;
@@ -803,9 +867,10 @@
       setStatus(`Reading header of ${file.name} …`);
       const t0 = performance.now();
       const next = {
-        fileName: file.name, fileSize: file.size,
+        fileName: file.name, fileSize: file.size, file,
         header: null, rawHeader: null, sizeCheck: null,
-        signature: null, firstVertex: null, error: null, parseMs: null,
+        signature: null, firstVertex: null, rowJump: null, lastRow: null, tail: null,
+        error: null, parseMs: null,
       };
       try {
         const header = await readHeaderWindow(file);
@@ -815,8 +880,17 @@
         next.sizeCheck = computeSizeCheck(header, file.size);
         next.signature = PLY.detect3DGS(header.elements);
         if (header.format.kind !== "ascii") {
+          const el0 = header.elements[0];
+          next.rowJump = el0 ? PLY.rowJumpInfo(el0) : { jumpable: false, rowBytes: 0, reason: "no rows" };
           try { next.firstVertex = await PLY.decodeFirstVertex(file, header); }
           catch (e) { next.firstVertex = { error: e.message || String(e) }; }
+          if (next.rowJump.jumpable) {
+            try { next.lastRow = await PLY.decodeRowAt(file, header, el0.count - 1); }
+            catch (e) { next.lastRow = { error: e.message || String(e) }; }
+            next.tail = PLY.tailCheckInfo(next.rowJump.rowBytes, el0.count, file.size, header.headerByteLength);
+          } else {
+            next.tail = { status: "na", reason: next.rowJump.reason, offset: null, available: null, need: next.rowJump.rowBytes };
+          }
         }
         next.parseMs = performance.now() - t0;
         state = next;
@@ -851,7 +925,7 @@
         renderVertexCards(s),
         renderOtherElementsCard(s),
       );
-      if (s.firstVertex) appendCards(resultsEl, renderFirstVertexCard(s));
+      if (s.firstVertex) appendCards(resultsEl, renderRowPreviewCard(s));
       appendCards(resultsEl,
         renderCommentsCard(s),
         renderRawHeaderCard(s),
@@ -899,6 +973,16 @@
           .map((f) => `${f.name} ${f.found.length}/${f.expected.length}`);
         const optComplete = sig.optionalMatched === sig.optionalTotal;
         badges.push(badge(optComplete ? "green" : "amber", `optional: ${optParts.join(", ")}`));
+      }
+      // Tail check: pure arithmetic on header + file size — does the final
+      // row of the first element exist in full? Shown only for binary files
+      // (s.tail stays null for ascii/parse-failure states).
+      if (s.tail) {
+        if (s.tail.status === "ok") badges.push(badge("green", "tail: ✓ last row intact"));
+        else if (s.tail.status === "missing") badges.push(badge("red", "tail: ✗ last row missing — body ends before it"));
+        else if (s.tail.status === "truncated-row")
+          badges.push(badge("red", `tail: ✗ last row partial (${fmtInt(s.tail.available)} of ${fmtInt(s.tail.need)} bytes)`));
+        else badges.push(badge("gray", `tail: n/a (${s.tail.reason})`));
       }
 
       const dt = (k) => el("dt", { text: k });
@@ -1057,18 +1141,80 @@
       return String(v);
     }
 
-    function renderFirstVertexCard(s) {
+    function renderRowPreviewCard(s) {
       const fv = s.firstVertex;
-      if (fv.error) return card([el("h2", { text: "First vertex" })],
+      const jump = s.rowJump;
+      const el0 = s.header.elements[0];
+      const total = el0 && Number.isFinite(el0.count) && el0.count > 0 ? el0.count : 0;
+      if (fv.error) return card([el("h2", { text: "Row preview" })],
         el("p", { class: "note" }, `Could not decode the first row: ${fv.error}`));
       if (!fv) return null;
-      const cells = fv.values.map((v) => el("div", { class: "fvcell" },
-        el("span", { class: "n" }, v.name || "—"),
-        el("span", { class: "v" }, fmtVal(v.value))));
-      const cap = el("p", { class: "fvcap" },
-        `First row of "${fv.displayName}" decoded from the binary body `,
-        fv.complete ? "" : el("span", { style: "color:var(--amber)" }, "— row extends beyond the 64 KB preview window; partial values shown. "));
-      return card([el("h2", {}, "First vertex ", el("span", { class: "count" }, fv.displayName))], el("div", {}, cap, el("div", { class: "fvgrid" }, cells)));
+
+      // Live-updated caption + grid nodes, so loadRow() can patch the card in
+      // place without rebuilding it (which would discard the row-jump form).
+      const capEl = el("p", { class: "fvcap" });
+      const gridEl = el("div", { class: "fvgrid" });
+
+      const setCaption = (idx, count, rowBytes, offset, complete) => {
+        capEl.textContent = "";
+        capEl.append(
+          `Row ${fmtInt(idx)} of ${fmtInt(count)} in "${fv.displayName}" · ${fmtInt(rowBytes)} B/row · body offset ${fmtBytes(offset)} `);
+        if (!complete) capEl.append(el("span", { style: "color:var(--amber)" },
+          "— row extends beyond the read window; partial values shown. "));
+      };
+      const setGrid = (row) => {
+        gridEl.textContent = "";
+        if (row.error) { gridEl.append(el("p", { class: "note" }, `Could not decode the row: ${row.error}`)); return; }
+        const values = row.values || [];
+        if (values.length === 0) { gridEl.append(el("p", { class: "note" }, "partial row — no complete properties decoded")); return; }
+        for (const v of values) gridEl.append(el("div", { class: "fvcell" },
+          el("span", { class: "n" }, v.name || "—"),
+          el("span", { class: "v" }, fmtVal(v.value))));
+      };
+
+      let controls = null;
+      if (jump && jump.jumpable && total > 0) {
+        let token = 0;
+        const rowInput = el("input", { id: "rowInput", type: "number", min: 0, max: total - 1, step: 1, value: 0 });
+        const loadRow = async (rawIdx) => {
+          let idx = parseInt(rawIdx, 10);
+          if (!Number.isFinite(idx)) idx = 0;
+          idx = Math.max(0, Math.min(idx, total - 1));
+          const my = ++token;
+          const offset = s.header.headerByteLength + idx * jump.rowBytes;
+          capEl.textContent = `Reading row ${fmtInt(idx)} …`;
+          gridEl.textContent = "";
+          gridEl.append(el("div", { class: "fvcell" }, el("span", { class: "n" }, "…")));
+          let row = (idx === total - 1 && s.lastRow) ? s.lastRow : null;
+          if (!row) {
+            try { row = await PLY.decodeRowAt(s.file, s.header, idx); }
+            catch (e) { row = { error: e.message || String(e) }; }
+          }
+          if (state !== s || my !== token) return; // superseded by a newer load
+          setCaption(idx, total, jump.rowBytes, offset, row && row.complete);
+          setGrid(row || { error: "row could not be read" });
+        };
+        controls = el("form", {
+          class: "actions rowjump",
+          onsubmit: (e) => { e.preventDefault(); loadRow(rowInput.value); },
+        },
+          el("label", { for: "rowInput" }, "row"),
+          rowInput,
+          el("button", { class: "btn", type: "submit" }, "Go"),
+          el("button", { class: "btn", id: "lastRowBtn", type: "button", onclick: () => loadRow(total - 1) }, "Last"),
+        );
+      }
+      const noteEl = (jump && !jump.jumpable)
+        ? el("p", { class: "note" }, `row jump n/a — ${jump.reason}; only row 0 is previewed`)
+        : null;
+
+      // Row 0 stays the default previewed row.
+      setCaption(0, total, jump && jump.jumpable ? jump.rowBytes : fv.bytesRead, s.header.headerByteLength, fv.complete);
+      setGrid(fv);
+
+      return card(
+        [el("h2", {}, "Row preview ", el("span", { class: "count" }, fv.displayName)), controls],
+        el("div", {}, noteEl, capEl, gridEl));
     }
 
     function renderCommentsCard(s) {
@@ -1138,6 +1284,9 @@
         },
         signature: s.signature,
         firstVertex: s.firstVertex,
+        rowJump: s.rowJump,
+        lastRow: s.lastRow,
+        tail: s.tail,
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);

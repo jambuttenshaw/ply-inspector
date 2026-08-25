@@ -15,23 +15,32 @@ one `index.html` is the whole deliverable. See [PLAN.md](PLAN.md) for the design
 
 Nothing is uploaded and the file body is never read in full — the tool reads at most
 a 64 KB window (growing up to 16 MB for very long headers) to find `end_header`,
-plus one 64 KB slice of the body for the first-vertex preview.
+plus up to two 64 KB slices of the body: the first row (always) and the last row
+(when the rows are fixed-size, for the tail check). Any other row is read only
+on demand, from a single bounded slice.
 
 ## What it shows
 
 - **File summary** — format/version, element list with counts, header size,
-  bytes/row of the first element, and a **size check** badge: expected-vs-actual
-  body size that flags **truncated** or **larger-than-expected** files (gray "n/a"
-  for ASCII bodies, variable-length rows, or unknown counts).
+  bytes/row of the first element, a **size check** badge (expected-vs-actual body
+  size that flags **truncated** or **larger-than-expected** files; gray "n/a" for
+  ASCII bodies, variable-length rows, or unknown counts), and a **tail check**
+  badge for fixed-size binary rows: pure arithmetic from header + file size,
+  reporting whether the last claimed row is **intact** (green), **missing**
+  (body ends before it, red), or **partial** with the exact available/needed
+  bytes (red). The two checks are complementary — a "larger-than-expected" file
+  whose last row still decodes shows a red size badge and a green tail badge.
 - **3DGS signature badge** — `3DGS — standard signature (59/59)` for the standard
   59-float32-property splat layout, an amber **near-match** badge (with a
   per-family checklist showing exactly which properties are missing) when the
   file looks 3DGS-like but deviates, and nothing for ordinary meshes/point clouds.
   **Optional** signature properties are reported separately and never change the
-  standard/near badge: the first example is the per-splat **normal**
-  (`nx`/`ny`/`nz`) written by the reference 3DGS exporter. When present you get
-  a second summary badge (`optional: normal 3/3`, amber if only part of an
-  optional set is present), a dashed "optional" row in the signature checklist
+  standard/near badge: two families ship — the per-splat **normal**
+  (`nx`/`ny`/`nz`) written by the reference 3DGS exporter, and the **material**
+  pair (`metallicFactor`/`roughnessFactor`) used by PBR splat exporters. When
+  present you get a summary badge (`optional: normal 3/3, material 0/2`, amber
+  if any optional set is incomplete), a dashed "optional" row per family in the
+  signature checklist
   (gray `– absent` instead of a red `missing` when not present), and a distinct
   dashed family grouping in the vertex table. The signature table is a clearly
   delimited `const` (PLAN §3.3 / §11.3) — add 2DGS/Mip-Splatting/quantized
@@ -43,8 +52,13 @@ plus one 64 KB slice of the body for the first-vertex preview.
   capture the table / the whole inspection.
 - **Other elements** — collapsed per element (e.g. `face`), with the same
   property tables inside.
-- **First vertex** — the first body row decoded from the binary (64 KB bounded
-  read), shown as name/value chips.
+- **Row preview** — row 0 of the first element decoded from the binary (64 KB
+  bounded read), shown as name/value chips. When the rows are fixed-size (no
+  `list` properties, no unknown types, finite positive count) the card grows a
+  row-jump box: type a row index and **Go** decodes that one row from a single
+  bounded slice, and **Last** jumps to the final row (served from the slice the
+  tail check already read — no re-read). For variable-length or unknown-type
+  rows the box is replaced by a note explaining why only row 0 is previewed.
 - **Comments & obj_info** and the **raw header** verbatim (one click, copyable).
 - **Warnings** — unknown keywords, properties before any element, unknown types,
   negative counts, and friends never block rendering; they are listed with line
@@ -56,7 +70,7 @@ plus one 64 KB slice of the body for the first-vertex preview.
 ```
 index.html               the app (deliverable)
 PLAN.md                  implementation plan
-scripts/make-fixtures.mjs  regenerates test/fixtures/ (15 fixtures)
+scripts/make-fixtures.mjs  regenerates test/fixtures/ (16 fixtures)
 test/run-tests.mjs       core test suite — runs the inline <script> in a Node vm
 test/browser-smoke.mjs   optional UI smoke test — headless Chrome/Edge over CDP
 test/fixtures/           generated PLY fixtures (do not edit by hand)
@@ -66,8 +80,8 @@ test/fixtures/           generated PLY fixtures (do not edit by hand)
 
 ```
 node scripts/make-fixtures.mjs   # regenerate fixtures (already checked in)
-node test/run-tests.mjs          # 32 core tests, no browser needed
-node test/browser-smoke.mjs      # 68 UI assertions, needs Chrome or Edge
+node test/run-tests.mjs          # 41 core tests, no browser needed
+node test/browser-smoke.mjs      # 96 UI assertions, needs Chrome or Edge
 ```
 
 The core suite executes the literal inline script of `index.html` in a Node `vm`
@@ -79,11 +93,16 @@ skip it where no browser is installed (override the binary via `CHROME_PATH`).
 
 ## Limitations (by design, PLAN §8)
 
-- **Header-only inspection.** The binary body is read only for the first-vertex
-  preview; the rest is never touched.
-- **First row only.** The preview decodes row 0 of the first element.
+- **Header-only inspection.** The binary body is read only for row previews
+  (row 0, the last row when jumpable, and on-demand row N); the rest is never
+  touched.
+- **Row-N preview needs fixed-size binary rows.** Any row of the first element
+  can be decoded on demand only when its size is exactly known: no `list`
+  properties (variable-length rows), no unknown types, and a finite positive
+  count. Otherwise only row 0 is previewed, and the tail check is n/a.
 - **One signature family table** is shipped (standard 3DGS, with the optional
-  normal set); near-match is a recognition hint, not a strict validator.
+  normal and material sets); near-match is a recognition hint, not a strict
+  validator.
 - **List property offsets** are approximate by nature (variable-length items);
   offsets after the first `list` property are marked `≈`.
 - **Unknown PLY types** are shown as `?` with 0 bytes plus a warning.
