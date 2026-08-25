@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>PLY Inspector</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --faint: #6e7681;
+    --accent: #58a6ff; --green: #3fb950; --amber: #d29922; --red: #f85149;
+    --mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 1150px; margin: 0 auto; padding: 18px 16px 64px; }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px 10px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+  }
+  .topbar h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
+  .topbar .sub { color: var(--muted); font-size: 12.5px; }
+  .topbar .crumb { margin-left: auto; color: var(--faint); font-size: 12px; font-family: var(--mono); }
+
+  /* ---------- drop zone ---------- */
+  .dropzone {
+    border: 2px dashed var(--border); border-radius: 10px; background: var(--panel);
+    padding: 26px 18px; text-align: center; color: var(--muted); cursor: pointer;
+    transition: border-color .15s ease, background .15s ease; outline: none;
+  }
+  .dropzone:hover, .dropzone:focus-visible { border-color: var(--accent); color: var(--text); }
+  .dropzone.hot { border-color: var(--accent); background: #12233a; color: var(--text); }
+  .dropzone b { color: var(--text); }
+  .dropzone .open-link { color: var(--accent); text-decoration: underline; cursor: pointer; }
+  .dropzone .hint { display: block; margin-top: 6px; font-size: 12px; color: var(--faint); }
+
+  .status { min-height: 1.4em; margin: 10px 2px; color: var(--muted); font-size: 13px; }
+  .status.err { color: var(--red); }
+  .status.ok { color: var(--green); }
+
+  /* ---------- cards ---------- */
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    margin: 0 0 14px; overflow: hidden;
+  }
+  .card > .card-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel2);
+  }
+  .card > .card-head h2 { font-size: 13.5px; margin: 0; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .card > .card-head .count { color: var(--text); font-weight: 600; }
+  .card > .card-body { padding: 12px 14px; }
+  .card > .card-body.tight { padding: 0; }
+
+  /* ---------- badges ---------- */
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; border-radius: 999px;
+    padding: 2px 10px 3px; font-size: 12px; font-weight: 600; border: 1px solid;
+    white-space: nowrap;
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .badge.green { color: var(--green); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.08); }
+  .badge.amber { color: var(--amber); border-color: rgba(210,153,34,.45); background: rgba(210,153,34,.08); }
+  .badge.red   { color: var(--red);   border-color: rgba(248,81,73,.45);  background: rgba(248,81,73,.08); }
+  .badge.gray  { color: var(--muted); border-color: var(--border);        background: transparent; }
+
+  /* ---------- summary key/value ---------- */
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+  .kv dt { color: var(--muted); font-size: 12.5px; }
+  .kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .kv dd .muted { color: var(--faint); font-family: inherit; }
+
+  /* ---------- property table ---------- */
+  table.ptable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.ptable th {
+    position: sticky; top: 0; background: var(--panel2); color: var(--muted);
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 7px 10px; border-bottom: 1px solid var(--border); z-index: 1;
+  }
+  table.ptable td { padding: 4px 10px; border-bottom: 1px solid rgba(48,54,61,.55); vertical-align: top; }
+  table.ptable tbody tr:hover { background: rgba(88,166,255,.07); }
+  table.ptable tr.clickable { cursor: pointer; }
+  table.ptable td.idx { color: var(--faint); font-family: var(--mono); text-align: right; }
+  table.ptable td.name { font-family: var(--mono); }
+  table.ptable td.mono { font-family: var(--mono); }
+  table.ptable td.num { font-family: var(--mono); text-align: right; color: var(--text); }
+  table.ptable td .norm { color: var(--faint); }
+  table.ptable td .fam { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+  table.ptable td .fam .swatch { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+  table.ptable tr.flagged td { background: rgba(248,81,73,.06); }
+  .tablewrap { max-height: 520px; overflow: auto; }
+
+  /* ---------- other elements ---------- */
+  .elemline { padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,.55); font-size: 13px; }
+  .elemline:last-child { border-bottom: none; }
+  .elemline .nm { font-family: var(--mono); font-weight: 600; }
+  .elemline .ct { color: var(--muted); font-family: var(--mono); }
+  .elemline .pl { color: var(--faint); font-family: var(--mono); font-size: 12px; }
+  details.elem > summary {
+    list-style: none; cursor: pointer; padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,.55);
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline;
+  }
+  details.elem > summary::-webkit-details-marker { display: none; }
+  details.elem > summary::before { content: "▸"; color: var(--faint); transition: transform .1s; }
+  details.elem[open] > summary::before { transform: rotate(90deg); }
+  details.elem > summary:hover { background: rgba(88,166,255,.05); }
+  details.elem .subtable { border-top: 1px solid var(--border); }
+
+  /* ---------- generic details ---------- */
+  details.ctl > summary {
+    list-style: none; cursor: pointer; padding: 10px 14px; color: var(--muted); font-size: 13px;
+  }
+  details.ctl > summary::-webkit-details-marker { display: none; }
+  details.ctl > summary::before { content: "▸"; color: var(--faint); margin-right: 8px; display: inline-block; transition: transform .1s; }
+  details.ctl[open] > summary::before { transform: rotate(90deg); }
+  details.ctl .inner { padding: 0 14px 12px; }
+
+  /* ---------- comments / raw header ---------- */
+  .cmtlist { margin: 0; padding: 0; list-style: none; }
+  .cmtlist li { font-family: var(--mono); font-size: 12px; color: var(--text); padding: 2px 0; border-bottom: 1px dashed rgba(48,54,61,.5); word-break: break-all; }
+  .cmtlist li .tag { color: var(--faint); margin-right: 8px; }
+  pre.raw {
+    margin: 0; padding: 12px 14px; background: #0b0f14; border-top: 1px solid var(--border);
+    font: 11.5px/1.55 var(--mono); color: #c9d1d9; overflow: auto; max-height: 420px; white-space: pre;
+  }
+
+  /* ---------- warnings ---------- */
+  .warn { display: flex; gap: 10px; padding: 7px 12px; border-bottom: 1px solid rgba(48,54,61,.55); font-size: 12.5px; }
+  .warn:last-child { border-bottom: none; }
+  .warn .ln { font-family: var(--mono); color: var(--amber); min-width: 64px; }
+  .warn .raw { font-family: var(--mono); color: var(--faint); word-break: break-all; }
+
+  /* ---------- error panel ---------- */
+  .errorcard { border-color: rgba(248,81,73,.55); }
+  .errorcard .card-head { background: rgba(248,81,73,.1); }
+  .errorcard .card-head h2 { color: var(--red); }
+  .errbody { padding: 12px 14px; }
+  .errbody .msg { font-size: 13.5px; margin: 0 0 8px; }
+  .errbody .rawline { font-family: var(--mono); font-size: 12px; color: var(--faint); background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; word-break: break-all; }
+
+  /* ---------- first vertex ---------- */
+  .fvgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
+  .fvcell { font-family: var(--mono); font-size: 11.5px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; display: flex; justify-content: space-between; gap: 8px; }
+  .fvcell .n { color: var(--muted); }
+  .fvcell .v { word-break: break-all; text-align: right; }
+  .fvcap { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+
+  /* ---------- signature checklist ---------- */
+  .famcheck { display: grid; gap: 8px; }
+  .famrow { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--panel2); }
+  .famrow .st { font-weight: 700; font-size: 12px; }
+  .famrow .st.ok { color: var(--green); }
+  .famrow .st.part { color: var(--amber); }
+  .famrow .st.no { color: var(--red); }
+  .famrow .nm { font-weight: 600; font-size: 13px; min-width: 150px; }
+  .famrow .ratio { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .famrow .miss { font-family: var(--mono); font-size: 11.5px; color: var(--faint); word-break: break-all; flex-basis: 100%; }
+  .famrow.optional { border-style: dashed; background: rgba(28,35,48,.6); }
+  .famrow .st.opt { color: var(--faint); }
+  .famrow .optpill { font-size: 10px; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; letter-spacing: .3px; }
+
+  /* optional signature families in the property table */
+  table.ptable td .swatch-optional { background: transparent; border: 1px dashed; }
+  table.ptable td .opttag { font-size: 10px; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
+  table.ptable tr.opt td { border-bottom: 1px dashed rgba(48,54,61,.55); }
+  table.ptable tr.opt td.name { color: var(--muted); }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 12px; font-size: 12.5px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:active { transform: translateY(1px); }
+  .actions { display: flex; gap: 8px; margin-left: auto; }
+
+  .note { color: var(--faint); font-size: 12px; }
+  .muted { color: var(--muted); }
+  .empty-msg { padding: 26px 14px; text-align: center; color: var(--muted); }
+
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--accent); color: var(--text);
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; z-index: 50;
+    transition: opacity .25s; opacity: 0; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="topbar">
+    <h1>PLY Inspector</h1>
+    <span class="sub">header inspector for .ply files</span>
+    <span class="crumb" id="crumb"></span>
+  </div>
+  <main id="main">
+    <div class="dropzone" id="dropzone" tabindex="0" role="button"
+         aria-label="Open a PLY file. Drag and drop a file here, or press Enter to browse.">
+      Drop a <b>.ply</b> file here, or <span class="open-link" id="openLink">browse…</span>
+      <span class="hint">Only the ASCII header is read (a few KB) — even for a 1 GB file the body is never touched. Nothing leaves your machine.</span>
+    </div>
+    <input type="file" id="fileInput" accept=".ply,.plyx" hidden />
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+    <div id="results"></div>
+  </main>
+</div>
+<div class="toast" id="toast" role="presentation"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* =====================================================================
+   * PLY core — pure functions, no DOM. The test harness (test/run-tests.mjs)
+   * executes this exact script text in a Node vm context, so everything
+   * browser-specific lives in the guarded UI section at the bottom.
+   * ===================================================================== */
+
+  // --- PLY type table (PLAN §3.2): token -> {normalized, bytes, signed} ---
+  const TYPES = {
+    char:    { normalized: "int8",    bytes: 1, signed: true  },
+    int8:    { normalized: "int8",    bytes: 1, signed: true  },
+    uchar:   { normalized: "uint8",   bytes: 1, signed: false },
+    uint8:   { normalized: "uint8",   bytes: 1, signed: false },
+    short:   { normalized: "int16",   bytes: 2, signed: true  },
+    int16:   { normalized: "int16",   bytes: 2, signed: true  },
+    ushort:  { normalized: "uint16",  bytes: 2, signed: false },
+    uint16:  { normalized: "uint16",  bytes: 2, signed: false },
+    int:     { normalized: "int32",   bytes: 4, signed: true  },
+    int32:   { normalized: "int32",   bytes: 4, signed: true  },
+    uint:    { normalized: "uint32",  bytes: 4, signed: false },
+    uint32:  { normalized: "uint32",  bytes: 4, signed: false },
+    float:   { normalized: "float32", bytes: 4, signed: false },
+    float32: { normalized: "float32", bytes: 4, signed: false },
+    double:  { normalized: "float64", bytes: 8, signed: false },
+    float64: { normalized: "float64", bytes: 8, signed: false },
+  };
+
+  class PlyError extends Error {
+    constructor(code, message, line = null, raw = null) {
+      super(message);
+      this.name = "PlyError";
+      this.code = code; // "MAGIC" | "FORMAT" | "UNTERMINATED" | "OTHER"
+      this.line = line;
+      this.raw = raw;
+    }
+  }
+
+  // --- header parsing (PLAN §4.4) ----------------------------------------
+  // bytes: Uint8Array (or Buffer). Returns a plain-data header object, or
+  // throws PlyError for hard errors. Unknown keywords are lenient -> warnings.
+  function parseHeader(bytes) {
+    if (!bytes || typeof bytes.byteLength !== "number")
+      throw new PlyError("OTHER", "input must be a byte array (Uint8Array/Buffer)");
+
+    const dec = new TextDecoder("utf-8", { fatal: false });
+    const N = bytes.byteLength;
+
+    // UTF-8 BOM tolerance (PLAN §4.4): skip EF BB BF before the magic.
+    let pos = 0;
+    if (N >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) pos = 3;
+
+    // Scan lines directly on the bytes so offsets stay exact under CRLF and
+    // multi-byte comment text. Each line: {text, lineStart, lineEnd, lineNo}.
+    // lineEnd is the index of the terminating \n, or N when the last line has
+    // no trailing newline.
+    const lines = [];
+    let i = pos, lineNo = 0;
+    while (i < N) {
+      const lineStart = i;
+      let lineEnd = indexOfByte(bytes, 0x0A, i);
+      if (lineEnd === -1) lineEnd = N;
+      let text = dec.decode(bytes.subarray(lineStart, lineEnd));
+      if (text.charCodeAt(text.length - 1) === 13) text = text.slice(0, -1); // strip trailing \r
+      lineNo += 1;
+      lines.push({ text, lineStart, lineEnd, lineNo });
+      i = lineEnd + 1;
+    }
+
+    if (lines.length === 0) throw new PlyError("MAGIC", "empty file — missing 'ply' magic line", 1, "");
+
+    // Magic: first line must be exactly "ply" (after trim/BOM).
+    const first = lines[0].text.trim();
+    if (first !== "ply")
+      throw new PlyError("MAGIC", `not a PLY file: first line is "${first}", expected "ply"`, 1, lines[0].text);
+
+    // Locate end_header.
+    let endIdx = -1;
+    for (let k = 1; k < lines.length; k++) {
+      if (lines[k].text.trim() === "end_header") { endIdx = k; break; }
+    }
+    if (endIdx === -1)
+      throw new PlyError("UNTERMINATED", "header not terminated: no 'end_header' line found in the read window", lines.length, null);
+
+    const warnings = [];
+    const warn = (lineNo, message, raw) => warnings.push({ line: lineNo, message, raw });
+
+    const elements = [];
+    const comments = [];
+    const objInfo = [];
+    let format = null;       // {kind, version}
+    let current = null;      // element being filled
+
+    for (let k = 1; k < endIdx; k++) {
+      const ln = lines[k];
+      const trimmed = ln.text.trim();
+      if (trimmed === "") continue;
+      const toks = trimmed.split(/\s+/);
+      const kw = toks[0];
+
+      if (kw === "format") {
+        const kind = toks[1], version = toks[2];
+        if (kind !== "ascii" && kind !== "binary_little_endian" && kind !== "binary_big_endian")
+          throw new PlyError("FORMAT", `unsupported format "${kind || ""}" — expected ascii, binary_little_endian or binary_big_endian`, ln.lineNo, ln.text);
+        if (version !== "1.0")
+          throw new PlyError("FORMAT", `unsupported PLY version "${version || ""}" — only 1.0 exists`, ln.lineNo, ln.text);
+        if (format) warn(ln.lineNo, `duplicate format line (keeping the first)`, ln.text);
+        else format = { kind, version };
+        continue;
+      }
+
+      if (kw === "element") {
+        const name = toks[1], countStr = toks[2];
+        if (!name || countStr === undefined) {
+          warn(ln.lineNo, `malformed element line skipped: "${trimmed}"`, ln.text);
+          continue;
+        }
+        let count = Number.parseInt(countStr, 10);
+        if (!Number.isFinite(count) || String(count) !== countStr.trim()) {
+          warn(ln.lineNo, `element "${name}" has non-integer count "${countStr}" — treating as 0`, ln.text);
+          count = 0;
+        } else if (count < 0) {
+          warn(ln.lineNo, `element "${name}" has negative count ${count}`, ln.text);
+        }
+        current = { name, count, properties: [] };
+        elements.push(current);
+        continue;
+      }
+
+      if (kw === "property") {
+        if (!current) {
+          warn(ln.lineNo, `property before any element — dropped: "${trimmed}"`, ln.text);
+          continue;
+        }
+        const prop = makeProperty(toks, ln, warnings);
+        current.properties.push(prop);
+        continue;
+      }
+
+      if (kw === "comment") {
+        comments.push({ line: ln.lineNo, text: trimmed.slice("comment".length).replace(/^\s+/, "") });
+        continue;
+      }
+
+      if (kw === "obj_info") {
+        objInfo.push({ line: ln.lineNo, text: trimmed.slice("obj_info".length).replace(/^\s+/, "") });
+        continue;
+      }
+
+      // Unknown keyword: lenient — warn and keep going (PLAN §4.4).
+      warn(ln.lineNo, `unknown keyword "${kw}" — line skipped`, ln.text);
+    }
+
+    if (!format)
+      throw new PlyError("FORMAT", "missing format line — expected e.g. \"format binary_little_endian 1.0\"", 1, null);
+
+    // Header byte length = everything up to and including the end_header newline.
+    const endLine = lines[endIdx];
+    const headerByteLength = endLine.lineEnd < N ? endLine.lineEnd + 1 : endLine.lineEnd;
+
+    return {
+      format,
+      headerByteLength,
+      elements,
+      comments,
+      objInfo,
+      warnings,
+      // duplicate element names are legal: expose an indexed display name per element
+      elementDisplay: displayNames(elements),
+    };
+  }
+
+  // "vertex", "vertex #2", ... for duplicate names (PLAN §4.4).
+  function displayNames(elements) {
+    const seen = Object.create(null);
+    return elements.map((e) => {
+      seen[e.name] = (seen[e.name] || 0) + 1;
+      return seen[e.name] === 1 ? e.name : `${e.name} #${seen[e.name]}`;
+    });
+  }
+
+  function makeProperty(toks, ln, warnings) {
+    // toks[0] === "property"
+    if (toks[1] === "list") {
+      const ctTok = toks[2], itTok = toks[3], name = toks[4];
+      const countType = ctTok ? TYPES[ctTok] : null;
+      const itemType = itTok ? TYPES[itTok] : null;
+      if (!ctTok || !itTok || !name)
+        warnings.push({ line: ln.lineNo, message: `malformed list property — skipped in sizing: "${toks.join(" ")}"`, raw: ln.text });
+      if (ctTok && !countType)
+        warnings.push({ line: ln.lineNo, message: `unknown list count type "${ctTok}"`, raw: ln.text });
+      if (itTok && !itemType)
+        warnings.push({ line: ln.lineNo, message: `unknown list item type "${itTok}"`, raw: ln.text });
+      return {
+        name: name || null,
+        isList: true,
+        rawType: `list ${ctTok || "?"} ${itTok || "?"}`,
+        countTypeRaw: ctTok || null, itemTypeRaw: itTok || null,
+        countType, itemType,
+        normalized: countType && itemType ? `list ${countType.normalized} ${itemType.normalized}` : "?",
+        bytes: 0, // variable-length rows; fixed part = countType bytes
+        fixedBytes: countType ? countType.bytes : 0,
+        unknown: !countType || !itemType,
+        rawLine: ln.text, // verbatim header line (used by click-to-copy)
+      };
+    }
+    const tTok = toks[1], name = toks[2];
+    const type = tTok ? TYPES[tTok] : null;
+    if (tTok && !type)
+      warnings.push({ line: ln.lineNo, message: `unknown property type "${tTok}" on "${name || "?"}" — shown as ? (0 bytes)`, raw: ln.text });
+    if (!name)
+      warnings.push({ line: ln.lineNo, message: `property without a name: "${toks.join(" ")}"`, raw: ln.text });
+    return {
+      name: name || null,
+      isList: false,
+      rawType: tTok || "?",
+      countTypeRaw: null, itemTypeRaw: null,
+      countType: null, itemType: null,
+      type,
+      normalized: type ? type.normalized : "?",
+      bytes: type ? type.bytes : 0,
+      fixedBytes: type ? type.bytes : 0,
+      unknown: !type,
+      rawLine: ln.text, // verbatim header line (used by click-to-copy)
+    };
+  }
+
+  function indexOfByte(bytes, byte, from) {
+    // Uint8Array.prototype.indexOf exists in browsers and Node; use it directly.
+    return bytes.indexOf(byte, from);
+  }
+
+  // --- expected body size (PLAN §3.2/§4.2) --------------------------------
+  // Returns {exact, variable, fixedBytes, expectedTotal, bytesPerElement}.
+  // expectedTotal is the full expected file size when exact; otherwise a
+  // lower bound (header + fixed bytes only).
+  function expectedSize(elements, headerByteLength, formatKind) {
+    let fixedBytes = 0;
+    let variable = false;
+    let countUnknown = false;
+    const bytesPerElement = {};
+    const seen = Object.create(null); // duplicate names are legal -> "face", "face #2"
+    for (const el of elements) {
+      seen[el.name] = (seen[el.name] || 0) + 1;
+      const disp = seen[el.name] === 1 ? el.name : `${el.name} #${seen[el.name]}`;
+      let rowFixed = 0, rowVar = false;
+      for (const p of el.properties) {
+        if (p.isList) { rowVar = true; rowFixed += p.fixedBytes || 0; } // count prefix is always present
+        else rowFixed += p.bytes || 0;
+      }
+      if (rowVar) variable = true;
+      let count = el.count;
+      if (!Number.isFinite(count)) { countUnknown = true; count = 0; }
+      fixedBytes += Math.max(0, count) * rowFixed;
+      bytesPerElement[disp] = { fixed: rowFixed, variable: rowVar };
+    }
+    const exact = formatKind !== "ascii" && !variable && !countUnknown;
+    return {
+      formatKind,
+      exact,
+      variable,
+      countUnknown,
+      fixedBytes,
+      expectedTotal: headerByteLength + fixedBytes, // full size when exact, else lower bound
+      bytesPerElement,
+    };
+  }
+
+  // sizeCheck(expected, actualSize) -> {status, expectedTotal, lowerBound}
+  // status: "match" | "truncated" | "larger" | "variable" | "ascii" | "unknown-count"
+  // expectedTotal is the exact expected file size when the check is exact,
+  // null otherwise; lowerBound is header+fixed bytes (meaningful for
+  // variable-length rows), null when counts are unknown or format is ascii.
+  function sizeCheck(expected, actualSize) {
+    const lb = expected.formatKind === "ascii" || expected.countUnknown ? null : expected.expectedTotal;
+    if (expected.countUnknown) return { status: "unknown-count", expectedTotal: null, lowerBound: null };
+    if (expected.formatKind === "ascii") return { status: "ascii", expectedTotal: null, lowerBound: lb };
+    if (expected.variable) return { status: "variable", expectedTotal: null, lowerBound: lb };
+    if (actualSize === expected.expectedTotal) return { status: "match", expectedTotal: expected.expectedTotal, lowerBound: expected.expectedTotal };
+    if (actualSize < expected.expectedTotal) return { status: "truncated", expectedTotal: expected.expectedTotal, lowerBound: expected.expectedTotal };
+    return { status: "larger", expectedTotal: expected.expectedTotal, lowerBound: expected.expectedTotal };
+  }
+
+  // --- 3DGS signature (PLAN §3.3) -----------------------------------------
+  // A clearly delimited const table; add future variants (2DGS, Mip-Splatting,
+  // quantized) as new entries (PLAN §11.3 default).
+  function range(prefix, n, end) {
+    const out = [];
+    for (let i = n; i < end; i++) out.push(`${prefix}_${i}`);
+    return out;
+  }
+  const SIGNATURES = {
+    "3dgs-standard": {
+      label: "3DGS — standard signature",
+      // Required families: all must be present for the "standard" badge.
+      // `optional` families are part of the signature but never required —
+      // first example: per-splat normals (nx/ny/nz), written by the
+      // reference 3DGS exporter. Optional presence is reported separately
+      // and never changes the standard/near badge.
+      families: [
+        { key: "position",  name: "position",            color: "#58a6ff", props: ["x", "y", "z"] },
+        { key: "sh_dc",     name: "SH dc (base color)",  color: "#d2a8ff", props: range("f_dc", 0, 3) },
+        { key: "sh_rest",   name: "SH rest (view-dep.)", color: "#56d364", props: range("f_rest", 0, 45) },
+        { key: "opacity",   name: "opacity",             color: "#e3b341", props: ["opacity"] },
+        { key: "scale",     name: "scale (log-space)",   color: "#ff7b72", props: range("scale", 0, 3) },
+        { key: "rotation",  name: "rotation (quaternion)", color: "#39c5cf", props: range("rot", 0, 4) },
+        { key: "normal",    name: "normal",              color: "#db61a2", optional: true, props: ["nx", "ny", "nz"] },
+        { key: "material",    name: "material",              color: "#db61a2", optional: true, props: ["metallicFactor", "roughnessFactor"] },
+      ],
+    },
+  };
+  const SIG_TOTAL = 59;
+
+  // 3DGS candidate test: position (x/y/z) is far too generic to trigger
+  // recognition on its own — a plain mesh or point cloud has it. SH
+  // coefficients (f_dc_*/f_rest_*) or the scale/rotation/opacity set are the
+  // giveaway (PLAN §3.3: recognition hint, not a hard requirement).
+  const CANDIDATE_RE = /^f_(?:dc|rest)_\d+$/;
+  const CANDIDATE_NAMES = new Set(["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]);
+
+  // detect3DGS(elements) -> {label, badge, matched, total, optionalMatched, optionalTotal,
+  // families, familyOf, isStandard, extras, vertexElement}
+  // badge: "standard" (all 59 required present) | "near" (some present) | "none"
+  // matched/total/isStandard count REQUIRED props only; optional families
+  // (e.g. normal nx/ny/nz) are reported per-family in `families` (each entry
+  // carries an `optional` flag) plus the optionalMatched/optionalTotal rollup.
+  function detect3DGS(elements) {
+    const sig = SIGNATURES["3dgs-standard"];
+    const vertex = elements.find((e) => e.name === "vertex") || null;
+    const baseFamilies = sig.families.map((f) => ({
+      key: f.key, name: f.name, color: f.color, optional: !!f.optional,
+      expected: f.props.slice(), found: [], missing: f.props.slice(),
+    }));
+    const optionalTotal = sig.families.filter((f) => f.optional).reduce((n, f) => n + f.props.length, 0);
+    if (!vertex)
+      return { badge: "none", matched: 0, total: SIG_TOTAL, optionalMatched: 0, optionalTotal, families: baseFamilies, familyOf: {}, isStandard: false, extras: [], vertexElement: null };
+
+    const hasCandidate = vertex.properties.some(
+      (p) => p.name && (CANDIDATE_RE.test(p.name) || CANDIDATE_NAMES.has(p.name)));
+    if (!hasCandidate)
+      return { badge: "none", matched: 0, total: SIG_TOTAL, optionalMatched: 0, optionalTotal, families: baseFamilies, familyOf: {}, isStandard: false, extras: [], vertexElement: vertex };
+
+    const present = new Set();
+    for (const p of vertex.properties) if (p.name) present.add(p.name);
+
+    const familyOf = {};
+    let matched = 0;
+    let optionalMatched = 0;
+    const families = baseFamilies.map((f) => {
+      const found = f.expected.filter((n) => present.has(n));
+      const missing = f.expected.filter((n) => !present.has(n));
+      for (const n of found) familyOf[n] = f.key;
+      if (f.optional) optionalMatched += found.length;
+      else matched += found.length;
+      return { ...f, found, missing };
+    });
+
+    // Required + optional props are all part of the signature; the rest are extras.
+    const sigAll = new Set(sig.families.flatMap((f) => f.props));
+    const extras = [...present.keys()].filter((n) => !sigAll.has(n));
+    const isStandard = matched === SIG_TOTAL;
+    const badge = isStandard ? "standard" : matched > 0 ? "near" : "none";
+    return { label: sig.label, badge, matched, total: SIG_TOTAL, optionalMatched, optionalTotal, families, familyOf, isStandard, extras, vertexElement: vertex };
+  }
+
+  // --- first-row decode (PLAN §4.5) ---------------------------------------
+  // decodeRow is pure (takes a Uint8Array) so Node can test it; the browser
+  // wrapper decodeFirstVertex does the bounded file read.
+  function decodeRow(bytes, element, bigEndian) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const le = !bigEndian;
+    const values = [];
+    let offset = 0, complete = true;
+    for (const p of element.properties) {
+      if (p.isList) {
+        const ct = p.countType, it = p.itemType;
+        if (!ct || !it) { complete = false; break; }
+        if (offset + ct.bytes > bytes.byteLength) { complete = false; break; }
+        const count = readScalar(dv, offset, le, ct);
+        offset += ct.bytes;
+        const items = [];
+        let ok = true;
+        for (let n = 0; n < count; n++) {
+          if (offset + it.bytes > bytes.byteLength) { ok = false; break; }
+          items.push(readScalar(dv, offset, le, it));
+          offset += it.bytes;
+        }
+        values.push({ name: p.name, value: items, isList: true, complete: ok });
+        if (!ok) complete = false;
+      } else {
+        const t = p.type;
+        if (!t) { complete = false; break; }
+        if (offset + t.bytes > bytes.byteLength) { complete = false; break; }
+        const v = readScalar(dv, offset, le, t);
+        offset += t.bytes;
+        values.push({ name: p.name, value: v, isList: false, complete: true });
+      }
+    }
+    return { values, bytesRead: offset, complete };
+  }
+
+  function readScalar(dv, offset, le, type) {
+    switch (type.normalized) {
+      case "int8":    return dv.getInt8(offset);
+      case "uint8":   return dv.getUint8(offset);
+      case "int16":   return dv.getInt16(offset, le);
+      case "uint16":  return dv.getUint16(offset, le);
+      case "int32":   return dv.getInt32(offset, le);
+      case "uint32":  return dv.getUint32(offset, le);
+      case "float32": return dv.getFloat32(offset, le);
+      case "float64": return dv.getFloat64(offset, le);
+      default:        return null;
+    }
+  }
+
+  // Browser-only: bounded read of the first 64 KB of the body, decode row 0.
+  async function decodeFirstVertex(file, header) {
+    const el = header.elements[0];
+    if (!el || !Number.isFinite(el.count) || el.count <= 0) return null;
+    if (header.format.kind === "ascii") return null;
+    const start = header.headerByteLength;
+    const end = Math.min(file.size, start + 64 * 1024);
+    if (end <= start) return null;
+    const buf = new Uint8Array(await file.slice(start, end).arrayBuffer());
+    const bigEndian = header.format.kind === "binary_big_endian";
+    const row = decodeRow(buf, el, bigEndian);
+    return { element: el.name, displayName: header.elementDisplay[0], values: row.values, complete: row.complete, bytesRead: row.bytesRead };
+  }
+
+  // --- export surface for tests / console use ---
+  const PLY = {
+    TYPES, SIGNATURES,
+    parseHeader, expectedSize, sizeCheck, detect3DGS,
+    decodeRow, decodeFirstVertex,
+    PlyError,
+  };
+  globalThis.PLYInspector = PLY;
+
+  /* =====================================================================
+   * UI — browser only (guarded so the Node harness never touches the DOM)
+   * ===================================================================== */
+  if (typeof document !== "undefined") {
+    initUI(PLY);
+  }
+
+  function initUI(PLY) {
+    const $ = (id) => document.getElementById(id);
+    const dropzone = $("dropzone");
+    const fileInput = $("fileInput");
+    const statusEl = $("status");
+    const resultsEl = $("results");
+    const crumbEl = $("crumb");
+    const toastEl = $("toast");
+
+    let state = null;          // last successful inspection
+    let lastFileName = null;   // for the "last inspected" breadcrumb
+    let toastTimer = null;
+
+    // ---------------- helpers ----------------
+    function el(tag, attrs, ...children) {
+      const node = document.createElement(tag);
+      if (attrs) for (const [k, v] of Object.entries(attrs)) {
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "text") node.textContent = v;
+        else if (k === "html") node.innerHTML = v; // only ever static strings
+        else if (k === "class") node.className = v;
+        else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+        else if (v === true) node.setAttribute(k, "");
+        else node.setAttribute(k, String(v));
+      }
+      for (const c of children.flat(Infinity)) {
+        if (c === null || c === undefined || c === false) continue;
+        node.append(c.nodeType ? c : document.createTextNode(String(c)));
+      }
+      return node;
+    }
+
+    function fmtBytes(n) {
+      if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let u = 0;
+      let v = n;
+      while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+      const s = u === 0 ? String(v) : v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+      return `${s} ${units[u]}`;
+    }
+    const fmtInt = (n) => (Number.isFinite(n) ? n.toLocaleString("en-US") : String(n));
+
+    function setStatus(msg, cls) {
+      statusEl.textContent = msg || "";
+      statusEl.className = "status" + (cls ? " " + cls : "");
+    }
+
+    function toast(msg) {
+      toastEl.textContent = msg;
+      toastEl.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1800);
+    }
+
+    async function copyText(text, okMsg) {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          toast(okMsg || "Copied to clipboard");
+          return true;
+        }
+      } catch (_) { /* fall through to legacy path */ }
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.append(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        if (ok) toast(okMsg || "Copied to clipboard");
+        return ok;
+      } catch (_) { return false; }
+    }
+
+    // Per-property row layout: exact offsets until the first list property,
+    // then approximate (marked) because list items are variable-length.
+    function rowLayout(element) {
+      let off = 0, definite = true;
+      return element.properties.map((p) => {
+        const entry = { offset: off, definite };
+        if (p.isList) { definite = false; off += p.fixedBytes || 0; }
+        else off += p.bytes || 0;
+        return entry;
+      });
+    }
+
+    // ---------------- loading (window growth, PLAN §4.1) ----------------
+    async function readHeaderWindow(file) {
+      let size = 64 * 1024;
+      const cap = 16 * 1024 * 1024;
+      for (;;) {
+        const sliceEnd = Math.min(size, file.size);
+        const bytes = new Uint8Array(await file.slice(0, sliceEnd).arrayBuffer());
+        try {
+          return PLY.parseHeader(bytes);
+        } catch (e) {
+          if (!e || e.code !== "UNTERMINATED") throw e; // hard error: don't grow
+          if (size >= cap || size >= file.size) throw e;
+          size *= 2;
+        }
+      }
+    }
+
+    function computeSizeCheck(header, fileSize) {
+      const es = PLY.expectedSize(header.elements, header.headerByteLength, header.format.kind);
+      const { status } = PLY.sizeCheck(es, fileSize);
+      let badgeCls, message;
+      switch (status) {
+        case "match":
+          badgeCls = "green";
+          message = `expected ${fmtBytes(es.expectedTotal)} — matches actual`;
+          break;
+        case "truncated":
+          badgeCls = "red";
+          message = `truncated — expected ≥ ${fmtBytes(es.expectedTotal)}, file is ${fmtBytes(fileSize)} (short by ${fmtBytes(es.expectedTotal - fileSize)})`;
+          break;
+        case "larger":
+          badgeCls = "red";
+          message = `larger than expected — ${fmtBytes(fileSize)} vs ${fmtBytes(es.expectedTotal)} (+${fmtBytes(fileSize - es.expectedTotal)})`;
+          break;
+        case "variable":
+          badgeCls = "gray";
+          message = `variable-length rows — exact check n/a (lower bound ${fmtBytes(es.expectedTotal)})`;
+          break;
+        case "ascii":
+          badgeCls = "gray";
+          message = "n/a for ASCII body";
+          break;
+        default:
+          badgeCls = "gray";
+          message = "n/a (unknown element count)";
+      }
+      return { ...es, status, badgeCls, message };
+    }
+
+    async function loadFile(file) {
+      setStatus(`Reading header of ${file.name} …`);
+      const t0 = performance.now();
+      const next = {
+        fileName: file.name, fileSize: file.size,
+        header: null, rawHeader: null, sizeCheck: null,
+        signature: null, firstVertex: null, error: null, parseMs: null,
+      };
+      try {
+        const header = await readHeaderWindow(file);
+        next.header = header;
+        next.rawHeader = new TextDecoder("utf-8", { fatal: false })
+          .decode(new Uint8Array(await file.slice(0, header.headerByteLength).arrayBuffer()));
+        next.sizeCheck = computeSizeCheck(header, file.size);
+        next.signature = PLY.detect3DGS(header.elements);
+        if (header.format.kind !== "ascii") {
+          try { next.firstVertex = await PLY.decodeFirstVertex(file, header); }
+          catch (e) { next.firstVertex = { error: e.message || String(e) }; }
+        }
+        next.parseMs = performance.now() - t0;
+        state = next;
+        if (lastFileName) crumbEl.textContent = `last inspected: ${lastFileName}`;
+        lastFileName = file.name;
+        render();
+        setStatus(`Inspected ${file.name} in ${next.parseMs < 10 ? next.parseMs.toFixed(1) : Math.round(next.parseMs)} ms — read ${fmtBytes(header.headerByteLength)} of a ${fmtBytes(file.size)} file.`, "ok");
+      } catch (e) {
+        next.error = e;
+        state = next;
+        render();
+        const where = e.line ? ` (line ${e.line})` : "";
+        setStatus(`Error: ${e.message}${where}`, "err");
+      }
+    }
+
+    // ---------------- rendering ----------------
+    // Element.append(null/undefined/false) would insert literal "null"/
+    // "undefined"/"false" text nodes, so card builders that return null
+    // (nothing to show) must be filtered before appending.
+    const appendCards = (parent, ...nodes) =>
+      parent.append(...nodes.filter((n) => n !== null && n !== undefined && n !== false));
+
+    function render() {
+      resultsEl.textContent = "";
+      if (!state) return;
+      if (state.error) { resultsEl.append(renderErrorCard(state)); return; }
+      const s = state;
+      appendCards(resultsEl,
+        renderSummaryCard(s),
+        renderSignatureCard(s),
+        renderVertexCards(s),
+        renderOtherElementsCard(s),
+      );
+      if (s.firstVertex) appendCards(resultsEl, renderFirstVertexCard(s));
+      appendCards(resultsEl,
+        renderCommentsCard(s),
+        renderRawHeaderCard(s),
+        renderWarningsCard(s),
+      );
+    }
+
+    function badge(cls, text) {
+      return el("span", { class: `badge ${cls}` }, el("span", { class: "dot" }), text);
+    }
+
+    function card(headNodes, bodyNode, bodyClass) {
+      return el("div", { class: "card" },
+        el("div", { class: "card-head" }, headNodes),
+        el("div", { class: "card-body" + (bodyClass ? " " + bodyClass : "") }, bodyNode));
+    }
+
+    function renderErrorCard(s) {
+      const e = s.error;
+      const body = el("div", { class: "errbody" },
+        el("p", { class: "msg" }, `Could not inspect ${s.fileName}: ${e.message}`),
+        e.raw ? el("div", { class: "rawline" }, `offending line${e.line ? ` ${e.line}` : ""}: ${e.raw}`) : null,
+        el("p", { class: "note" }, "Rendering stops on hard errors (magic/format/termination). Warnings, by contrast, never block rendering."));
+      const c = el("div", { class: "card errorcard" },
+        el("div", { class: "card-head" }, el("h2", { text: "Hard error" })),
+        body);
+      return c;
+    }
+
+    function renderSummaryCard(s) {
+      const h = s.header, sc = s.sizeCheck, sig = s.signature;
+      const vertexEls = h.elements.filter((e) => e.name === "vertex");
+      const vertexCount = vertexEls.reduce((n, e) => n + (Number.isFinite(e.count) ? e.count : 0), 0);
+      const firstVertexEl = vertexEls[0] || h.elements[0];
+      const bpeDisp = firstVertexEl ? h.elementDisplay[h.elements.indexOf(firstVertexEl)] : null;
+      const bpe = bpeDisp ? sc.bytesPerElement[bpeDisp] : null;
+
+      const badges = [badge(sc.badgeCls, `size: ${sc.message}`)];
+      if (sig.badge === "standard") badges.push(badge("green", `${sig.label} (${sig.matched}/${sig.total})`));
+      else if (sig.badge === "near") badges.push(badge("amber", `3DGS near-match (${sig.matched}/${sig.total})`));
+      // Optional signature properties (e.g. normals): only shown when at
+      // least one is present — absence of optionals is expected, not notable.
+      if (sig.badge !== "none" && sig.optionalMatched > 0) {
+        const optParts = sig.families.filter((f) => f.optional)
+          .map((f) => `${f.name} ${f.found.length}/${f.expected.length}`);
+        const optComplete = sig.optionalMatched === sig.optionalTotal;
+        badges.push(badge(optComplete ? "green" : "amber", `optional: ${optParts.join(", ")}`));
+      }
+
+      const dt = (k) => el("dt", { text: k });
+      const dd = (v) => el("dd", {}, v);
+      const kv = el("dl", { class: "kv" },
+        dt("format"), dd(h.format.kind + " " + h.format.version),
+        dt("elements"), dd(h.elements.map((e, i) => `${h.elementDisplay[i]} × ${fmtInt(e.count)}`).join(", ")),
+        dt("vertices"), dd(fmtInt(vertexCount)),
+        dt("header size"), dd(fmtBytes(h.headerByteLength)),
+        dt("bytes/row (first element)"), dd(bpe ? `${fmtInt(bpe.fixed)}${bpe.variable ? " + var" : ""}` : "—"),
+        dt("comments / obj_info"), dd(`${h.comments.length} / ${h.objInfo.length}`),
+      );
+      return card([
+        el("h2", {}, "File summary ", el("span", { class: "count" }, s.fileName)),
+        ...badges,
+      ], kv);
+    }
+
+    function renderSignatureCard(s) {
+      const sig = s.signature;
+      if (sig.badge === "none") return null;
+      const rows = sig.families.map((f) => {
+        const complete = f.missing.length === 0 && f.found.length > 0;
+        let stCls, stTxt;
+        if (f.optional) {
+          // Optional families are styled differently: absence is fine
+          // (gray "absent"), never an error (red "missing").
+          if (complete) { stCls = "ok"; stTxt = "✓ complete"; }
+          else if (f.found.length > 0) { stCls = "part"; stTxt = "◐ partial"; }
+          else { stCls = "opt"; stTxt = "– absent"; }
+        } else {
+          stCls = complete ? "ok" : f.found.length > 0 ? "part" : "no";
+          stTxt = complete ? "✓ complete" : f.found.length > 0 ? "◐ partial" : "✗ missing";
+        }
+        const row = el("div", { class: f.optional ? "famrow optional" : "famrow" },
+          el("span", { class: `st ${stCls}` }, stTxt),
+          el("span", { class: "nm", style: `color:${f.color}` }, f.name),
+          f.optional ? el("span", { class: "optpill" }, "optional") : null,
+          el("span", { class: "ratio" }, `${f.found.length}/${f.expected.length}`),
+        );
+        if (f.missing.length) row.append(el("span", { class: "miss" }, `missing: ${f.missing.join(", ")}`));
+        return row;
+      });
+      const extraNote = sig.extras.length
+        ? el("p", { class: "note" }, `${sig.extras.length} extra propert${sig.extras.length === 1 ? "y" : "ies"} beyond the standard signature: ${sig.extras.join(", ")}`)
+        : null;
+      const head = el("h2", {},
+        sig.badge === "standard" ? "3DGS signature — " : "3DGS signature checklist — ",
+        el("span", { class: "count" }, `${sig.matched}/${sig.total}`));
+      return card([head], el("div", {}, extraNote, el("div", { class: "famcheck" }, rows)));
+    }
+
+    function propertyTable(element, signature, familyOf) {
+      const layout = rowLayout(element);
+      const head = el("thead", {}, el("tr", {},
+        el("th", { text: "#" }), el("th", { text: "Name" }), el("th", { text: "Type" }),
+        el("th", { text: "Bytes" }), el("th", { text: "Offset" }), el("th", { text: "Group" }),
+      ));
+      const bodyRows = element.properties.map((p, i) => {
+        const lay = layout[i];
+        const famKey = familyOf ? familyOf[p.name] : null;
+        const fam = famKey ? PLY.SIGNATURES["3dgs-standard"].families.find((f) => f.key === famKey) : null;
+        const bytesCell = p.isList
+          ? `${p.fixedBytes}+n·${p.itemType ? p.itemType.bytes : "?"}`
+          : String(p.bytes);
+        const offsetCell = (lay.definite ? "" : "≈") + fmtInt(lay.offset);
+        const typeCell = p.unknown
+          ? el("span", {}, el("span", { class: "norm" }, p.rawType), " ", el("span", { style: "color:var(--red)" }, "(unknown)"))
+          : el("span", {}, p.rawType, " → ", el("span", { class: "norm" }, p.normalized));
+        const tr = el("tr", {
+          class: [p.unknown ? "flagged" : null, fam && fam.optional ? "opt" : null, "clickable"].filter(Boolean).join(" "),
+          "data-idx": i,
+        },
+          el("td", { class: "idx" }, String(i)),
+          el("td", { class: "name" }, p.name || "—"),
+          el("td", { class: "mono" }, typeCell),
+          el("td", { class: "num" }, bytesCell),
+          el("td", { class: "num" }, offsetCell),
+          fam
+            ? el("td", {}, el("span", { class: fam.optional ? "fam fam-optional" : "fam" },
+                el("span", {
+                  class: fam.optional ? "swatch swatch-optional" : "swatch",
+                  style: fam.optional ? `border-color:${fam.color}` : `background:${fam.color}`,
+                }),
+                fam.name,
+                fam.optional ? el("span", { class: "opttag" }, "optional") : null))
+            : el("td", { class: "muted" }, "—"));
+        tr.addEventListener("click", () => {
+          // Copy the verbatim header line when available; otherwise rebuild
+          // it with "?" placeholders for any missing piece (never "null").
+          const line = p.rawLine || (p.isList
+            ? `property list ${p.countTypeRaw || "?"} ${p.itemTypeRaw || "?"} ${p.name || "?"}`
+            : `property ${p.rawType} ${p.name || "?"}`);
+          copyText(line, `Copied: ${line}`);
+        });
+        return tr;
+      });
+      const table = el("table", { class: "ptable" }, head, el("tbody", {}, bodyRows));
+      return el("div", { class: "tablewrap" }, table);
+    }
+
+    function renderVertexCards(s) {
+      const h = s.header, sig = s.signature;
+      const vertexEls = h.elements.filter((e) => e.name === "vertex");
+      if (vertexEls.length === 0) return null;
+      const cards = vertexEls.map((v, vi) => {
+        const disp = h.elementDisplay[h.elements.indexOf(v)];
+        const familyOf = (vi === 0) ? sig.familyOf : null; // group only the first (the signature is defined on "vertex")
+        const head = [el("h2", {}, "Vertex properties ", el("span", { class: "count" }, `${disp} (${v.properties.length})`))];
+        if (vi === 0) {
+          head.push(el("span", { class: "actions" },
+            el("button", { class: "btn", type: "button", onclick: () => copyVertexCSV(s, v) }, "copy CSV"),
+            el("button", { class: "btn", type: "button", onclick: () => exportJSON(s) }, "export JSON")));
+        }
+        const c = card(head, propertyTable(v, sig, familyOf));
+        c.classList.add("card");
+        return c;
+      });
+      if (cards.length === 1) return cards[0];
+      return el("div", {}, ...cards);
+    }
+
+    function renderOtherElementsCard(s) {
+      const h = s.header;
+      const others = h.elements.filter((e) => e.name !== "vertex");
+      if (others.length === 0) return null;
+      const items = others.map((e) => {
+        const disp = h.elementDisplay[h.elements.indexOf(e)];
+        const bpe = s.sizeCheck.bytesPerElement[disp];
+        // "?" placeholders keep malformed/unnamed properties from rendering
+        // literal "null" text (rawType already uses "?" for missing types).
+        const propSummary = e.properties.map((p) => (p.isList
+          ? `list ${p.countTypeRaw || "?"} ${p.itemTypeRaw || "?"} ${p.name || "?"}`
+          : `${p.rawType} ${p.name || "?"}`)).join(" · ");
+        const det = el("details", { class: "elem" },
+          el("summary", {},
+            el("span", { class: "nm" }, disp),
+            el("span", { class: "ct" }, `× ${fmtInt(e.count)}`),
+            el("span", { class: "pl" }, `— ${e.properties.length} propert${e.properties.length === 1 ? "y" : "ies"}${bpe && bpe.variable ? " (variable rows)" : ` · ${fmtInt(bpe ? bpe.fixed : 0)} B/row`}: ${propSummary}`)),
+          el("div", { class: "subtable" }, propertyTable(e, null, null)));
+        return det;
+      });
+      return card([el("h2", {}, "Other elements ", el("span", { class: "count" }, `(${others.length})`))],
+        el("div", {}, ...items), "tight");
+    }
+
+    function fmtVal(v) {
+      if (Array.isArray(v)) {
+        if (v.length <= 16) return v.map((x) => fmtVal(x)).join(", ");
+        return v.slice(0, 16).map((x) => fmtVal(x)).join(", ") + ` … (${v.length})`;
+      }
+      if (typeof v === "number") {
+        if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
+        return v.toPrecision(6);
+      }
+      return String(v);
+    }
+
+    function renderFirstVertexCard(s) {
+      const fv = s.firstVertex;
+      if (fv.error) return card([el("h2", { text: "First vertex" })],
+        el("p", { class: "note" }, `Could not decode the first row: ${fv.error}`));
+      if (!fv) return null;
+      const cells = fv.values.map((v) => el("div", { class: "fvcell" },
+        el("span", { class: "n" }, v.name || "—"),
+        el("span", { class: "v" }, fmtVal(v.value))));
+      const cap = el("p", { class: "fvcap" },
+        `First row of "${fv.displayName}" decoded from the binary body `,
+        fv.complete ? "" : el("span", { style: "color:var(--amber)" }, "— row extends beyond the 64 KB preview window; partial values shown. "));
+      return card([el("h2", {}, "First vertex ", el("span", { class: "count" }, fv.displayName))], el("div", {}, cap, el("div", { class: "fvgrid" }, cells)));
+    }
+
+    function renderCommentsCard(s) {
+      const h = s.header;
+      const n = h.comments.length + h.objInfo.length;
+      const list = el("ul", { class: "cmtlist" },
+        ...h.comments.map((c) => el("li", {}, el("span", { class: "tag" }, `L${c.line} comment`), c.text)),
+        ...h.objInfo.map((c) => el("li", {}, el("span", { class: "tag" }, `L${c.line} obj_info`), c.text)));
+      const det = el("details", { class: "ctl" },
+        el("summary", {}, `Comments & obj_info (${n})`),
+        el("div", { class: "inner" }, n ? list : el("span", { class: "note" }, "none")));
+      return el("div", { class: "card" }, det);
+    }
+
+    function renderRawHeaderCard(s) {
+      const det = el("details", { class: "ctl" },
+        el("summary", {}, `Raw header (${fmtBytes(s.header.headerByteLength)}, verbatim)`),
+        el("pre", { class: "raw" }, s.rawHeader));
+      const copyBtn = el("button", { class: "btn", type: "button", onclick: () => copyText(s.rawHeader, "Raw header copied") }, "copy");
+      return el("div", { class: "card" },
+        el("div", { class: "card-head" }, el("h2", { text: "Raw header" }), el("span", { class: "actions" }, copyBtn)),
+        el("div", {}, det));
+    }
+
+    function renderWarningsCard(s) {
+      const w = s.header.warnings;
+      if (w.length === 0) return null;
+      const items = w.map((x) => el("div", { class: "warn" },
+        el("span", { class: "ln" }, `line ${x.line}`),
+        el("span", {}, x.message, x.raw ? el("div", { class: "raw" }, x.raw) : null)));
+      return card([el("h2", {}, "Warnings ", el("span", { class: "count" }, `(${w.length})`), el("span", { class: "note" }, "warnings never block rendering"))],
+        el("div", {}, ...items), "tight");
+    }
+
+    // ---------------- exports ----------------
+    function copyVertexCSV(s, vertexEl) {
+      const layout = rowLayout(vertexEl);
+      const sig = s.signature;
+      const famName = (p) => {
+        const key = sig.familyOf[p.name];
+        if (!key) return "";
+        const f = PLY.SIGNATURES["3dgs-standard"].families.find((x) => x.key === key);
+        return f ? f.name : "";
+      };
+      const esc = (v) => {
+        const t = String(v === null || v === undefined ? "" : v);
+        return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+      };
+      const lines = [["#", "name", "type_raw", "type_normalized", "bytes", "offset", "group"].join(",")];
+      vertexEl.properties.forEach((p, i) => {
+        lines.push([i, p.name, p.rawType, p.normalized,
+          p.isList ? `list` : p.bytes, layout[i].offset, famName(p)].map(esc).join(","));
+      });
+      copyText(lines.join("\n"), "Vertex table copied as CSV");
+    }
+
+    function exportJSON(s) {
+      const payload = {
+        tool: "PLY Inspector",
+        file: { name: s.fileName, size: s.fileSize },
+        parseMs: s.parseMs,
+        header: s.header,
+        sizeCheck: {
+          status: s.sizeCheck.status, message: s.sizeCheck.message,
+          exact: s.sizeCheck.exact, variable: s.sizeCheck.variable,
+          expectedTotal: s.sizeCheck.expectedTotal,
+        },
+        signature: s.signature,
+        firstVertex: s.firstVertex,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = s.fileName.replace(/\.[^.]+$/, "") + ".ply-inspection.json";
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast("JSON exported");
+    }
+
+    // ---------------- event wiring ----------------
+    function openPicker() { fileInput.click(); }
+    dropzone.addEventListener("click", openPicker);
+    dropzone.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); }
+    });
+    $("openLink").addEventListener("click", (e) => { e.stopPropagation(); openPicker(); });
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (f) loadFile(f);
+      fileInput.value = "";
+    });
+
+    // Drag & drop (window-wide so drops anywhere work; dropzone highlights).
+    let dragDepth = 0;
+    window.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      dragDepth += 1;
+      dropzone.classList.add("hot");
+    });
+    window.addEventListener("dragover", (e) => e.preventDefault());
+    window.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dropzone.classList.remove("hot");
+    });
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      dropzone.classList.remove("hot");
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) loadFile(f);
+    });
+
+    setStatus("Ready — drop a .ply file anywhere on this page.");
+  }
+})();
+</script>
+</body>
+</html>
