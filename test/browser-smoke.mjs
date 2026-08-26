@@ -207,6 +207,9 @@ const DOM_SNAPSHOT = `(() => {
     cardTitles: qsa("#results .card-head h2").map(t),
     kv: kvEl ? Array.from(kvEl.children).map((c) => t(c)) : null,
     vertexRows: table0 ? table0.querySelectorAll("tbody tr").length : -1,
+    // M7.3: the vertex table's Group column (6th cell) per property row —
+    // alias rows (metallic/roughness) must resolve to their family.
+    groups: table0 ? Array.from(table0.querySelectorAll("tbody tr td:nth-child(6)")).map(t) : null,
     fams: qsa("#results .famrow").map(t),
     fvCount: qsa("#results .fvcell").length,
     fvFirst: q("#results .fvcell .v") ? q("#results .fvcell .v").textContent : null,
@@ -223,6 +226,7 @@ const DOM_SNAPSHOT = `(() => {
     relPills: qsa("#results .relpill, #results .optpill, #results .famrow.optional").length,
     relBadges: qsa("#results .badge").map(t).filter((b) => b.startsWith("relighting:")),
     relRows: qsa("#results .relrow").map(t),
+    relNote: t(q("#results .relpanel .note")),
     // Global regression guard (user-reported bug: bare "null" on the page):
     // no visible text node whose ENTIRE content is exactly "null"/"undefined"
     // (that is exactly what Element.append(null) renders). Regions that echo
@@ -379,6 +383,30 @@ const scenariosHttp = [
       check("relightable: no checklist row pills (M7.1)", d.relPills === 0, d.relPills);
       check("relightable: first row decoded (64 cells)", d.fvCount === 64, d.fvCount);
       check("relightable: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
+      check("relightable: no via-aliases note (canonical names, M7.3)", !d.relRows.some((r) => r.includes("via aliases")), d.relRows);
+    },
+  },
+  {
+    name: "3dgs_relightable_alias.ply",
+    expect: (d) => {
+      check("alias: standard 59/59 badge (aliases don't affect the standard badge, M7.3)", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
+      check("alias: no optional pill (M7.2)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
+      check("alias: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
+      check("alias: green relighting badge (supported 5/5 via aliases, M7.3)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges);
+      check("alias: 64 property rows", d.vertexRows === 64, d.vertexRows);
+      check("alias: sub-panel — material complete via aliases, no missing list (M7.3)",
+        d.relRows.length === 2 &&
+        d.relRows[0].includes("✓ complete") && d.relRows[0].includes("3/3") &&
+        d.relRows[1].includes("✓ complete") && d.relRows[1].includes("2/2") &&
+        d.relRows[1].includes("via aliases: metallic → metallicFactor, roughness → roughness") &&
+        !d.relRows[1].includes("missing:"),
+        d.relRows);
+      // NB: the cell's text is "materialoptional" — fam.name and the
+      // "optional" tag are adjacent spans with no whitespace between them.
+      check("alias: Group column resolves metallic/roughness to the material family (M7.3)",
+        d.groups && d.groups[62] === "materialoptional" && d.groups[63] === "materialoptional",
+        d.groups && d.groups.slice(60));
+      check("alias: sub-panel note explains the aliases (M7.3)", d.relNote !== null && d.relNote.includes("alias: metallic") && d.relNote.includes("alias: roughness"), d.relNote);
     },
   },
   {
@@ -467,6 +495,7 @@ const scenariosFile = [
   { name: "3dgs_missing_rest.ply", embed: true, expect: (d) => check("file:// near: 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges) },
   { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + no optional pill (M7.2)", d.vertexRows === 62 && !d.badges.some((b) => b.startsWith("optional:")), { rows: d.vertexRows, badges: d.badges }) },
   { name: "3dgs_relightable.ply", embed: true, expect: (d) => check("file:// relightable: green relighting badge (supported 5/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges) },
+  { name: "3dgs_relightable_alias.ply", embed: true, expect: (d) => check("file:// alias: green relighting badge (supported 5/5 via aliases, M7.3)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges) },
   { name: "bad_magic.ply", embed: true, expect: (d) => check("file:// bad magic: error card", d.errMsg !== null, d.errMsg) },
 ];
 

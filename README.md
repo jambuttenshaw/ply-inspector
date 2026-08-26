@@ -36,7 +36,8 @@ on demand, from a single bounded slice.
   **Optional** signature properties are reported separately and never change the
   standard/near badge: two families ship — the per-splat **normal**
   (`nx`/`ny`/`nz`) written by the reference 3DGS exporter, and the **material**
-  pair (`metallicFactor`/`roughnessFactor`) used by PBR splat exporters. They
+  pair (`metallicFactor`/`roughnessFactor` — the shorter `metallic`/`roughness`
+  spellings are accepted as aliases) used by PBR splat exporters. They
   are listed only inside the "Relighting required" sub-panel — their sole
   feature group — never
   in the main signature checklist (required families only, 6 rows), and they
@@ -47,7 +48,9 @@ on demand, from a single bounded slice.
   (`relighting: ✓ supported (5/5)` green / `◐ partial (3/5)` amber /
   `✗ not supported (0/5)` red) answers whether the splats can be relit: a PLY is
   relightable only when it carries per-vertex **normals** (`nx`/`ny`/`nz`) *and*
-  PBR **material factors** (`metallicFactor`/`roughnessFactor`). The signature
+  PBR **material factors** (`metallicFactor`/`roughnessFactor` — any one of the
+  aliases `metallic`/`roughness` satisfies the same property; the sub-panel shows
+  which spelling was accepted). The signature
   checklist card ends with a "Relighting required" sub-panel that names exactly
   which of the two groups is missing when the answer is no. The verdict is in
   the JSON export too.
@@ -76,7 +79,7 @@ on demand, from a single bounded slice.
 ```
 index.html               the app (deliverable)
 PLAN.md                  implementation plan
-scripts/make-fixtures.mjs  regenerates test/fixtures/ (18 fixtures)
+scripts/make-fixtures.mjs  regenerates test/fixtures/ (19 fixtures)
 test/run-tests.mjs       core test suite — runs the inline <script> in a Node vm
 test/browser-smoke.mjs   optional UI smoke test — headless Chrome/Edge over CDP
 test/fixtures/           generated PLY fixtures (do not edit by hand)
@@ -86,8 +89,8 @@ test/fixtures/           generated PLY fixtures (do not edit by hand)
 
 ```
 node scripts/make-fixtures.mjs   # regenerate fixtures (already checked in)
-node test/run-tests.mjs          # 49 core tests, no browser needed
-node test/browser-smoke.mjs      # 121 UI assertions, needs Chrome or Edge
+node test/run-tests.mjs          # 53 core tests, no browser needed
+node test/browser-smoke.mjs      # 133 UI assertions, needs Chrome or Edge
 ```
 
 The core suite executes the literal inline script of `index.html` in a Node `vm`

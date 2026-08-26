@@ -8,6 +8,7 @@
 //   3dgs_with_normals:  value(row r, prop i) = r * 100 + i
 //   3dgs_normals_partial: value(row r, prop i) = r * 50 + i
 //   3dgs_relightable:   value(row r, prop i) = r * 100 + i
+//   3dgs_relightable_alias: value(row r, prop i) = r * 100 + i
 //
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -178,6 +179,39 @@ if (new Set(STD3DGS).size !== 59) throw new Error("duplicate property names in s
   for (let r = 0; r < rows; r++)
     for (let i = 0; i < names.length; i++) body.writeFloatLE(r * 100 + i, r * names.length * 4 + i * 4);
   W("3dgs_relightable.ply", Buffer.concat([Buffer.from(header, "utf8"), body]));
+}
+
+// ---------------------------------------------------------------------------
+// 3dgs_relightable_alias.ply — same layout as 3dgs_relightable.ply, but the
+// PBR material factors use their M7.3 ALIAS names (metallic / roughness
+// instead of metallicFactor / roughnessFactor), 64 props × 4 B = 256 B/vertex.
+// Pins alias matching: standard badge + relighting 5/5 via aliases.
+// ---------------------------------------------------------------------------
+{
+  const names = [
+    "x", "y", "z",
+    "nx", "ny", "nz",
+    "f_dc_0", "f_dc_1", "f_dc_2",
+    ...Array.from({ length: 45 }, (_, i) => `f_rest_${i}`),
+    "opacity",
+    "scale_0", "scale_1", "scale_2",
+    "rot_0", "rot_1", "rot_2", "rot_3",
+    "metallic", "roughness",
+  ];
+  if (names.length !== 64) throw new Error(`expected 64 props, got ${names.length}`);
+  const rows = 2;
+  const header = headerOf([
+    "ply",
+    "format binary_little_endian 1.0",
+    "comment standard 3DGS + normals + material ALIASES (metallic/roughness) — relightable (M7.3)",
+    "element vertex 2",
+    ...names.map((n) => `property float ${n}`),
+    "end_header",
+  ]);
+  const body = Buffer.alloc(rows * names.length * 4);
+  for (let r = 0; r < rows; r++)
+    for (let i = 0; i < names.length; i++) body.writeFloatLE(r * 100 + i, r * names.length * 4 + i * 4);
+  W("3dgs_relightable_alias.ply", Buffer.concat([Buffer.from(header, "utf8"), body]));
 }
 
 // ---------------------------------------------------------------------------

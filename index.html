@@ -183,6 +183,8 @@
   .relrow .nm { font-weight: 600; font-size: 12.5px; }
   .relrow .ratio { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .relrow .miss { font-family: var(--mono); font-size: 11.5px; color: var(--faint); word-break: break-all; flex-basis: 100%; }
+  /* M7.3: which alias satisfied a property (file name -> canonical name) */
+  .relrow .aliasnote { font-family: var(--mono); font-size: 11.5px; color: var(--muted); word-break: break-all; flex-basis: 100%; }
 
   /* ---------- buttons ---------- */
   .btn {
@@ -542,7 +544,11 @@
         { key: "scale",     name: "scale (log-space)",   color: "#ff7b72", props: range("scale", 0, 3) },
         { key: "rotation",  name: "rotation (quaternion)", color: "#39c5cf", props: range("rot", 0, 4) },
         { key: "normal",    name: "normal",              color: "#db61a2", optional: true, props: ["nx", "ny", "nz"] },
-        { key: "material",  name: "material",            color: "#ffa657", optional: true, props: ["metallicFactor", "roughnessFactor"] },
+        { key: "material",  name: "material",            color: "#ffa657", optional: true, props: ["metallicFactor", "roughnessFactor"],
+          // M7.3: aliases — any one of [canonical, ...aliases] satisfies the
+          // property. The canonical name is what `missing` reports (the name
+          // to add); `found` records whichever name is actually in the file.
+          aliases: { metallicFactor: ["metallic"], roughnessFactor: ["roughness"] } },
       ],
     },
   };
@@ -555,18 +561,37 @@
   const CANDIDATE_RE = /^f_(?:dc|rest)_\d+$/;
   const CANDIDATE_NAMES = new Set(["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]);
 
+  // Property aliases (M7.3): a family may carry `aliases` — a map from a
+  // canonical prop name to alternative names accepted for the same property.
+  // A property is satisfied when ANY of [canonical, ...aliases] is present
+  // (name-based, like the rest of the signature). propNames lists the full
+  // name set; matchProp returns the name actually in the file (canonical
+  // wins) or null when none is present.
+  function propNames(f, name) {
+    return [name, ...((f.aliases && f.aliases[name]) || [])];
+  }
+  function matchProp(f, name, present) {
+    for (const n of propNames(f, name)) if (present.has(n)) return n;
+    return null;
+  }
+
   // detect3DGS(elements) -> {label, badge, matched, total, optionalMatched, optionalTotal,
   // families, familyOf, isStandard, extras, vertexElement}
   // badge: "standard" (all 59 required present) | "near" (some present) | "none"
   // matched/total/isStandard count REQUIRED props only; optional families
   // (e.g. normal nx/ny/nz) are reported per-family in `families` (each entry
   // carries an `optional` flag) plus the optionalMatched/optionalTotal rollup.
+  // M7.3: `found` holds the name actually in the file (an alias when matched
+  // via one); `missing` keeps the canonical name (the one to add); familyOf
+  // maps every signature name present — canonical and alias alike — so the
+  // vertex-table Group column resolves both spellings.
   function detect3DGS(elements) {
     const sig = SIGNATURES["3dgs-standard"];
     const vertex = elements.find((e) => e.name === "vertex") || null;
     const baseFamilies = sig.families.map((f) => ({
       key: f.key, name: f.name, color: f.color, optional: !!f.optional,
       expected: f.props.slice(), found: [], missing: f.props.slice(),
+      aliases: f.aliases || null, // M7.3: must carry through for matchProp/propNames
     }));
     const optionalTotal = sig.families.filter((f) => f.optional).reduce((n, f) => n + f.props.length, 0);
     if (!vertex)
@@ -584,16 +609,27 @@
     let matched = 0;
     let optionalMatched = 0;
     const families = baseFamilies.map((f) => {
-      const found = f.expected.filter((n) => present.has(n));
-      const missing = f.expected.filter((n) => !present.has(n));
-      for (const n of found) familyOf[n] = f.key;
+      // M7.3: alias-aware matching — the winning name (canonical preferred)
+      // goes to found[], the canonical name stays in missing[].
+      const found = [];
+      const missing = [];
+      for (const n of f.expected) {
+        const hit = matchProp(f, n, present);
+        if (hit) found.push(hit);
+        else missing.push(n);
+        for (const a of propNames(f, n)) if (present.has(a)) familyOf[a] = f.key;
+      }
       if (f.optional) optionalMatched += found.length;
       else matched += found.length;
       return { ...f, found, missing };
     });
 
-    // Required + optional props are all part of the signature; the rest are extras.
-    const sigAll = new Set(sig.families.flatMap((f) => f.props));
+    // Required + optional props — and their M7.3 aliases — are all part of
+    // the signature; the rest are extras. An alias name is never "extra".
+    const sigAll = new Set();
+    for (const f of sig.families)
+      for (const n of f.props)
+        for (const a of propNames(f, n)) sigAll.add(a);
     const extras = [...present.keys()].filter((n) => !sigAll.has(n));
     const isStandard = matched === SIG_TOTAL;
     const badge = isStandard ? "standard" : matched > 0 ? "near" : "none";
@@ -617,6 +653,10 @@
   // the verdict for 3DGS candidates only is a render-layer decision.
   // verdict: "supported" (all required props present) | "partial" (1..n-1) |
   // "not supported" (0); matched/total count ALL props of the required groups.
+  // M7.3: each group carries `via` — a map of alias name -> canonical name
+  // for props satisfied by an alias — so the UI and the JSON export can show
+  // which spelling satisfied the property. found records the file's actual
+  // names; missing keeps the canonical names (the ones to add).
   function detectRelighting(elements) {
     const vertex = elements.find((e) => e.name === "vertex") || null;
     if (!vertex) return null;
@@ -625,9 +665,17 @@
     const sigFamilies = SIGNATURES["3dgs-standard"].families;
     const groups = FEATURES.relighting.requires.map((key) => {
       const f = sigFamilies.find((x) => x.key === key);
-      const found = f.props.filter((n) => present.has(n));
-      const missing = f.props.filter((n) => !present.has(n));
-      return { key: f.key, name: f.name, expected: f.props.slice(), found, missing, complete: missing.length === 0 };
+      const found = [];
+      const missing = [];
+      const via = {};
+      for (const n of f.props) {
+        const hit = matchProp(f, n, present);
+        if (hit) {
+          found.push(hit);
+          if (hit !== n) via[hit] = n;
+        } else missing.push(n);
+      }
+      return { key: f.key, name: f.name, expected: f.props.slice(), found, missing, via, complete: missing.length === 0 };
     });
     const total = groups.reduce((n, g) => n + g.expected.length, 0);
     const matched = groups.reduce((n, g) => n + g.found.length, 0);
@@ -1094,13 +1142,18 @@
             el("span", { class: "ratio" }, `${g.found.length}/${g.expected.length}`),
           );
           if (g.missing.length) row.append(el("span", { class: "miss" }, `missing: ${g.missing.join(", ")}`));
+          // M7.3: shown whenever an alias satisfied a property (complete or
+          // partial), so the user sees which spelling was accepted.
+          if (Object.keys(g.via).length)
+            row.append(el("span", { class: "aliasnote" },
+              `via aliases: ${Object.entries(g.via).map(([a, c]) => `${a} → ${c}`).join(", ")}`));
           return row;
         });
         relPanel = el("div", { class: "relpanel" },
           el("div", { class: "relhead" },
             el("span", { class: "reltitle" }, "Relighting required"),
             badge(relCls, `${relMark} ${r.verdict} (${r.matched}/${r.total})`)),
-          el("p", { class: "note" }, "Requires per-vertex normals (nx, ny, nz) plus PBR material factors (metallicFactor, roughnessFactor)."),
+          el("p", { class: "note" }, "Requires per-vertex normals (nx, ny, nz) plus PBR material factors — metallicFactor (alias: metallic) and roughnessFactor (alias: roughness); any one name satisfies the property."),
           el("div", { class: "relcheck" }, groupRows));
       }
       return card([head], el("div", {}, extraNote, el("div", { class: "famcheck" }, rows), relPanel));

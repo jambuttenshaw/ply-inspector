@@ -424,6 +424,71 @@ test("detectRelighting: name-based only — int-typed factors still count in v1"
 });
 
 // ---------------------------------------------------------------------------
+// Property aliases (M7.3) — metallic / roughness
+// ---------------------------------------------------------------------------
+test("SIGNATURES: material family declares aliases; no other family does (M7.3)", () => {
+  const sig = P.SIGNATURES["3dgs-standard"];
+  const material = sig.families.find((f) => f.key === "material");
+  assertDeepEq(material.aliases, { metallicFactor: ["metallic"], roughnessFactor: ["roughness"] });
+  for (const f of sig.families)
+    if (f.key !== "material") assert(!f.aliases, `family ${f.key} has no aliases`);
+});
+
+test("3dgs_relightable_alias: standard badge + relighting 5/5 via aliases (M7.3)", () => {
+  const buf = fx("3dgs_relightable_alias.ply");
+  const h = P.parseHeader(buf);
+  const v = h.elements[0];
+  assertEq(v.properties.length, 64);
+  assertEq(v.properties[62].name, "metallic", "alias names at the end");
+  assertEq(v.properties[63].name, "roughness");
+  assertEq(P.sizeCheck(P.expectedSize(h.elements, h.headerByteLength, h.format.kind), buf.length).status, "match");
+  const s = P.detect3DGS(h.elements);
+  assertEq(s.badge, "standard", "aliases do not affect the standard badge");
+  assertEq(s.matched, 59, "required matched/total untouched");
+  assertEq(s.optionalMatched, 5, "aliases satisfy the optional material props");
+  assertEq(s.extras.length, 0, "alias names are signature props, not extras");
+  assertEq(s.familyOf["metallic"], "material", "Group column resolves the alias");
+  assertEq(s.familyOf["roughness"], "material");
+  assert(!s.familyOf["metallicFactor"], "canonical name not in the file -> not grouped");
+  assertEq(Object.keys(s.familyOf).length, 64);
+  const r = P.detectRelighting(h.elements);
+  assertEq(r.verdict, "supported");
+  assertEq(r.matched, 5);
+  assertEq(r.total, 5);
+  assertDeepEq(r.missing, []);
+  assertDeepEq(r.groups[1].found, ["metallic", "roughness"], "found records the file's actual names");
+  assertDeepEq(r.groups[1].via, { metallic: "metallicFactor", roughness: "roughnessFactor" });
+  assertDeepEq(r.groups[0].via, {}, "no aliases on the normal group");
+  assertEq(r.groups[1].complete, true);
+});
+
+test("aliases: partial — only the metallic alias satisfies one of two material props (M7.3)", () => {
+  const mk = (names) => ({ name: "vertex", count: 1, properties: names.map((n) => ({ name: n })) });
+  const r = P.detectRelighting([mk(["nx", "ny", "nz", "metallic"])]);
+  assertEq(r.verdict, "partial");
+  assertEq(r.matched, 4);
+  assertDeepEq(r.groups[1].found, ["metallic"]);
+  assertDeepEq(r.groups[1].missing, ["roughnessFactor"], "missing keeps the canonical name");
+  assertDeepEq(r.groups[1].via, { metallic: "metallicFactor" });
+});
+
+test("aliases: canonical wins when both present; alias name is not an extra (M7.3)", () => {
+  const mk = (names) => ({ name: "vertex", count: 1, properties: names.map((n) => ({ name: n })) });
+  const el = mk(["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2",
+    "nx", "ny", "nz",
+    "metallicFactor", "metallic", "roughnessFactor", "roughness"]);
+  const s = P.detect3DGS([el]);
+  assertEq(s.badge, "near");
+  assertEq(s.extras.length, 0, "both spellings are signature props, not extras");
+  assertEq(s.familyOf["metallicFactor"], "material", "canonical row grouped");
+  assertEq(s.familyOf["metallic"], "material", "redundant alias row also grouped");
+  const r = P.detectRelighting([el]);
+  assertEq(r.verdict, "supported");
+  assertDeepEq(r.groups[1].found, ["metallicFactor", "roughnessFactor"], "canonical preferred in found");
+  assertDeepEq(r.groups[1].via, {}, "no via entry when the canonical name is present");
+});
+
+// ---------------------------------------------------------------------------
 // big_endian.ply
 // ---------------------------------------------------------------------------
 test("big_endian: BE decode of double/int/uchar (rows 0 and 1)", () => {
