@@ -24,12 +24,11 @@ on demand, from a single bounded slice.
 - **File summary** — format/version, element list with counts, header size,
   bytes/row of the first element, a **size check** badge (expected-vs-actual body
   size that flags **truncated** or **larger-than-expected** files; gray "n/a" for
-  ASCII bodies, variable-length rows, or unknown counts), and a **tail check**
-  badge for fixed-size binary rows: pure arithmetic from header + file size,
-  reporting whether the last claimed row is **intact** (green), **missing**
-  (body ends before it, red), or **partial** with the exact available/needed
-  bytes (red). The two checks are complementary — a "larger-than-expected" file
-  whose last row still decodes shows a red size badge and a green tail badge.
+  ASCII bodies, variable-length rows, or unknown counts). A **tail check** for
+  fixed-size binary rows — whether the last claimed row is **intact**,
+  **missing** (body ends before it), or **partial** (with the exact
+  available/needed bytes) — is still computed from header + file size and
+  included in the JSON export as `tail`, but it is no longer shown as a badge.
 - **3DGS signature badge** — `3DGS — standard signature (59/59)` for the standard
   59-float32-property splat layout, an amber **near-match** badge (with a
   per-family checklist showing exactly which properties are missing) when the
@@ -37,10 +36,9 @@ on demand, from a single bounded slice.
   **Optional** signature properties are reported separately and never change the
   standard/near badge: two families ship — the per-splat **normal**
   (`nx`/`ny`/`nz`) written by the reference 3DGS exporter, and the **material**
-  pair (`metallicFactor`/`roughnessFactor`) used by PBR splat exporters. When
-  present you get a summary badge (`optional: normal 3/3, material 0/2`, amber
-  if any optional set is incomplete); the families themselves are listed only
-  inside the "Relighting required" sub-panel — their sole feature group — never
+  pair (`metallicFactor`/`roughnessFactor`) used by PBR splat exporters. They
+  are listed only inside the "Relighting required" sub-panel — their sole
+  feature group — never
   in the main signature checklist (required families only, 6 rows), and they
   keep a distinct dashed family grouping in the vertex table. The signature table is a clearly
   delimited `const` (PLAN §3.3 / §11.3) — add 2DGS/Mip-Splatting/quantized

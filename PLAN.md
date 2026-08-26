@@ -111,10 +111,11 @@ the "Relighting required" sub-panel (M7.1: optional families never appear in the
 signature checklist, which lists required families only) — and get a distinct family
 grouping in the property table. The first optional set is the per-splat **normal** (`nx`, `ny`, `nz` —
 float, 12 bytes/vertex), written by the reference 3DGS exporter right after `x/y/z`
-(62 properties × 4 B = 248 B/vertex). A summary badge (`optional: normal 3/3`, amber
-when only part of an optional set is present) appears only when at least one optional
-property is found. Optional properties count toward the exact size check like any other
-property. More optional sets can be added to the same signature table.
+(62 properties × 4 B = 248 B/vertex). The `optional: …` summary badge that once
+reported them was removed in M7.2 — they are visible only in the "Relighting required"
+sub-panel, the property table, and the JSON export. Optional properties count toward
+the exact size check like any other property. More optional sets can be added to the
+same signature table.
 
 **Relighting capability (M7).** A distinct question from the signature badge:
 *is this PLY relightable?* For that use case a PLY is **relightable** only when both
@@ -154,7 +155,8 @@ placement confirmed with the user; remaining items are v1 defaults):
      "no", the *why* is immediately visible;
   2. a compact **file-summary badge** (`relighting: ✓ supported (5/5)` /
      `relighting: ◐ partial (3/5)` / `relighting: ✗ not supported (0/5)`) for
-     at-a-glance identification, mirroring the existing `optional:` badge;
+     at-a-glance identification, mirroring the then-existing `optional:` badge
+     (M7.2 later removed the `optional:` pill; the `relighting:` pill remains);
   3. a `relighting` pill on the `normal`/`material` rows of the checklist —
      SUPERSEDED by M7.1 (the optional rows left the main checklist, so both row
      pills were retired with them).
@@ -182,8 +184,9 @@ checklist — they appear only in the groups they are part of*):
   re-decide only if one is ever added.)
 - **Unchanged by this revision:** the whole data layer (`SIGNATURES`,
   `detect3DGS`, `detectRelighting`, `FEATURES`, JSON export), the standard/near
-  badge, the 59 matched/total counts, both summary badges (`optional: …`,
-  `relighting: …`), the property-table Group column with its `optional` tag, and
+  badge, the 59 matched/total counts, the summary badges (the `relighting: …`
+  pill; the `optional: …` pill survived M7.1 but was removed in M7.2), the
+  property-table Group column with its `optional` tag, and
   all fixtures.
 - **Tests:** core suite untouched (49 tests — the change is render-layer only).
   Browser smoke: drop/repurpose the `famOpt` and `relPills` snapshot keys; every
@@ -193,6 +196,24 @@ checklist — they appear only in the groups they are part of*):
 - **Docs touched:** §3 (optional-properties addendum wording + UI-surface item 3,
   marked superseded), the §4.2 tree, the milestone table; README "What it shows"
   bullets (checklist rows + pills wording).
+
+**Summary-pill removal (M7.2, implemented).** Two File-summary pills are no longer
+rendered under any circumstances (direct user request):
+
+- **`optional: …`** — the optional-family rollup pill. Nothing replaces it: the
+  relighting badge + sub-panel already surface the same information for the two
+  families that ship, and `optionalMatched`/`optionalTotal` stay in the JSON
+  export.
+- **`tail: …`** — the tail-check pill (ok / missing / truncated-row / n-a). The
+  `tailCheckInfo` computation is untouched; the verdict stays in the JSON export
+  as `tail`, it just has no UI. The `truncated_body` / `tail_midrow` fixtures now
+  pin the size-check badge + export instead of the pill.
+
+Render-layer only: `renderSummaryCard` drops both badge blocks; no data-layer,
+fixture, or core-test change (49 core tests). Browser smoke: every former
+pill-presence assertion becomes a no-pill guard (`!startsWith("tail:")` /
+`!startsWith("optional:")`); the count stays 121. Docs: README "What it shows"
+bullets reworded; this section + the M7/M7.1 mentions above annotated.
 
 ## 4. Architecture
 
@@ -292,12 +313,12 @@ types, finite positive count), any row N can be previewed on demand: `decodeRowA
 computes `headerByteLength + N·rowBytes` and reads one slice capped at
 `max(64 KB, rowBytes)`. The last row is decoded once during load and reused by the
 "Last" button (no re-read). The same offset math drives the **tail check** — pure
-arithmetic, no decoding: file size vs the last claimed row's offset yields `ok`
-(green), `missing` (body ends before it), or `truncated-row` (body ends mid-row,
-reported with exact available/needed bytes). Non-jumpable rows and ASCII bodies show a
-gray `n/a` badge with the reason. The tail check and the size check are complementary
-by design: a larger-than-expected file whose last row still decodes shows a red size
-badge and a green tail badge.
+arithmetic, no decoding: file size vs the last claimed row's offset yields `ok`,
+`missing` (body ends before it), or `truncated-row` (body ends mid-row, reported
+with exact available/needed bytes); non-jumpable rows and ASCII bodies give `n/a`
+with the reason. The tail pill in the summary was removed in M7.2 — the verdict
+still runs and is exported as `tail` in the JSON snapshot, but it is no longer
+rendered anywhere.
 
 ## 5. UI design
 
@@ -388,7 +409,7 @@ Fixtures (`test/fixtures/`, generated by `scripts/make-fixtures.mjs` plus a few 
 | Fixture | Verifies |
 |---|---|
 | `3dgs_standard.ply` | 59-property standard header + 3 binary rows → table, 236 B/vertex, size check, 3DGS badge |
-| `3dgs_with_normals.ply` | 62-property standard + optional normals (INRIA layout) → standard badge + `optional: normal 3/3`, 248 B/vertex |
+| `3dgs_with_normals.ply` | 62-property standard + optional normals (INRIA layout) → standard badge + partial relighting verdict, 248 B/vertex (the optional pill was removed in M7.2) |
 | `3dgs_normals_partial.ply` | 60-property standard + `nx` only → badge stays standard, optional 1/3 partial |
 | `3dgs_relightable.ply` | 64-property standard + normals + material (INRIA layout) → standard badge + `relighting: supported (5/5)`, 256 B/vertex |
 | `ascii_relightable_mesh.ply` | ASCII mesh with normals + material factors, no SH props → 3DGS badge `none`; core `detectRelighting` still reports `supported (5/5)` — display is gated to candidates by the render layer, so this fixture pins the core-vs-UI split |
@@ -402,7 +423,7 @@ Fixtures (`test/fixtures/`, generated by `scripts/make-fixtures.mjs` plus a few 
 | `weird_props.ply` | Unnamed properties + malformed `property list` lines → warnings, `?` placeholders, no "null" rendered |
 | `header_at_boundary.ply` | `end_header` exactly at first-window edge → window growth |
 | `truncated_body.ply` | Binary header valid, body 1 row short → truncated warning |
-| `tail_midrow.ply` | Binary header valid, body ends mid-row (1 full row + 2 stray bytes) → tail check `truncated-row` (2 of 4 B) + size check truncated |
+| `tail_midrow.ply` | Binary header valid, body ends mid-row (1 full row + 2 stray bytes) → tail verdict `truncated-row` (2 of 4 B) in the JSON export + size check truncated (the tail pill was removed in M7.2) |
 
 The row preview (M5/M6) gets its own decode tests (LE/BE, int widths, list counts,
 last-row jumps, tail verdicts). The relighting verdict (M7) gets its own `detectRelighting`
@@ -439,6 +460,7 @@ dsh-test/
 | M5 | Polish & stretch | First-vertex preview, clipboard-on-row-click, a11y pass, empty/error states, README polish | S–M |
 | M6 | Row-N preview & tail check | `rowJumpInfo`/`tailCheckInfo`/`decodeRowAt`, row-jump form + **Last** button, tail badge in the summary, `rowJump`/`lastRow`/`tail` in JSON export, `tail_midrow` fixture | S |
 | M7 | Relighting capability | `FEATURES` table + pure `detectRelighting` (tested); file-summary relighting badge; "Relighting required" sub-panel in the signature checklist card (candidates only); M7.1: main checklist scoped to required families (optional families render only inside the sub-panel); verdict in JSON export; `3dgs_relightable` + `ascii_relightable_mesh` fixtures | S–M |
+| M7.2 | Summary-pill removal | `optional: …` and `tail: …` pills no longer rendered under any circumstances (data + JSON export untouched); smoke pill assertions flipped to no-pill guards; README/PLAN reworded | S |
 
 S ≈ under an hour of implementation; M ≈ a focused session. Total single-file size target
 < 60 KB, no external requests.

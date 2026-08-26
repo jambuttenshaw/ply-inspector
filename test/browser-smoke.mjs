@@ -284,12 +284,12 @@ const scenariosHttp = [
       check("standard: status reports inspected", d.status.startsWith("Inspected"), d.status);
       check("standard: green 59/59 badge with label", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
       check("standard: size check matches actual", d.badges.some((b) => b.startsWith("size: expected") && b.includes("matches actual")), d.badges);
-      check("standard: green tail badge (last row intact)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("standard: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("standard: 59 property rows", d.vertexRows === 59, d.vertexRows);
       check("standard: vertex card title", d.cardTitles.includes("Vertex properties vertex (59)"), d.cardTitles);
       check("standard: 6 checklist rows — required families only, all complete", d.fams.length === 6 && d.fams.every((f) => f.startsWith("✓ complete")), d.fams);
       check("standard: no optional rows in the main checklist (normal + material live in the relighting sub-panel)", !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
-      check("standard: no optional summary badge (0/5 is not notable)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
+      check("standard: no optional pill (M7.2)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
       check("standard: red relighting badge (not supported 0/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✗ not supported (0/5)", d.relBadges);
       check("standard: sub-panel lists both groups missing with the full prop list",
         d.relRows.length === 2 &&
@@ -322,7 +322,7 @@ const scenariosHttp = [
       check("near: sh_rest partial with missing list", d.fams.some((f) => f.includes("SH rest") && f.includes("partial") && f.includes("missing: f_rest_11")), d.fams);
       check("near: 6 checklist rows — required families only (M7.1)", d.fams.length === 6, d.fams);
       check("near: no optional rows in the main checklist", !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
-      check("near: green tail badge (both rows present)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("near: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("near: no standard badge", !d.badges.some((b) => b.includes("standard signature")), d.badges);
       check("near: red relighting badge (not supported 0/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✗ not supported (0/5)", d.relBadges);
     },
@@ -332,13 +332,13 @@ const scenariosHttp = [
     expect: (d) => {
       check("normals: status reports inspected", d.status.startsWith("Inspected"), d.status);
       check("normals: standard 59/59 badge (required count unchanged)", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
-      check("normals: amber optional badge (normal 3/3, material 0/2)", d.badges.some((b) => b === "optional: normal 3/3, material 0/2"), d.badges);
+      check("normals: no optional pill (M7.2 — lives only in the sub-panel)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
       check("normals: 62 property rows", d.vertexRows === 62, d.vertexRows);
       check("normals: 6 required-only checklist rows (normal/material not double-listed)", d.fams.length === 6 && !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
       check("normals: first row decoded (62 cells)", d.fvCount === 62, d.fvCount);
       check("normals: row 0 last value = 61 (rot_3)", d.fvLast === "61", d.fvLast);
       check("normals: size matches actual (248 B/row)", d.badges.some((b) => b.startsWith("size: expected") && b.includes("matches actual")), d.badges);
-      check("normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("normals: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("normals: amber relighting badge (partial 3/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ◐ partial (3/5)", d.relBadges);
       check("normals: sub-panel — normals complete, material group is the gap",
         d.relRows.length === 2 &&
@@ -351,7 +351,7 @@ const scenariosHttp = [
     name: "3dgs_normals_partial.ply",
     expect: (d) => {
       check("partial normals: standard badge stays", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
-      check("partial normals: amber optional badge (normal 1/3, material 0/2)", d.badges.some((b) => b === "optional: normal 1/3, material 0/2"), d.badges);
+      check("partial normals: no optional pill (M7.2)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
       check("partial normals: 60 property rows", d.vertexRows === 60, d.vertexRows);
       check("partial normals: 6 required-only checklist rows", d.fams.length === 6 && !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
       check("partial normals: sub-panel — normal partial with missing list, material missing",
@@ -359,7 +359,7 @@ const scenariosHttp = [
         d.relRows[0].includes("◐ partial") && d.relRows[0].includes("missing: ny, nz") &&
         d.relRows[1].includes("✗ missing") && d.relRows[1].includes("0/2"),
         d.relRows);
-      check("partial normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("partial normals: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("partial normals: amber relighting badge (partial 1/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ◐ partial (1/5)", d.relBadges);
     },
   },
@@ -367,7 +367,7 @@ const scenariosHttp = [
     name: "3dgs_relightable.ply",
     expect: (d) => {
       check("relightable: standard 59/59 badge (material props don't affect it)", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
-      check("relightable: green optional badge (normal 3/3, material 2/2)", d.badges.some((b) => b === "optional: normal 3/3, material 2/2"), d.badges);
+      check("relightable: no optional pill (M7.2)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
       check("relightable: green relighting badge (supported 5/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges);
       check("relightable: 64 property rows", d.vertexRows === 64, d.vertexRows);
       check("relightable: sub-panel — both groups complete",
@@ -378,7 +378,7 @@ const scenariosHttp = [
       check("relightable: 6 required-only checklist rows", d.fams.length === 6 && !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
       check("relightable: no checklist row pills (M7.1)", d.relPills === 0, d.relPills);
       check("relightable: first row decoded (64 cells)", d.fvCount === 64, d.fvCount);
-      check("relightable: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("relightable: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
     },
   },
   {
@@ -399,7 +399,7 @@ const scenariosHttp = [
       check("weird props: 4 vertex property rows", d.vertexRows === 4, d.vertexRows);
       check("weird props: other-elements summary uses '?' placeholders, never 'null'", d.otherSummary !== null && d.otherSummary.includes("list ? ? ?") && !d.otherSummary.includes("null"), d.otherSummary);
       check("weird props: first row partial (2 cells before the bad list)", d.fvCount === 2, d.fvCount);
-      check("weird props: gray tail n/a badge (list rows)", d.badges.some((b) => b === "tail: n/a (variable-length rows)"), d.badges);
+      check("weird props: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("weird props: no row-jump controls", d.hasRowJump === false, d.hasRowJump);
       check("weird props: no relighting verdict (not a 3DGS candidate)", d.relBadges.length === 0 && d.relRows.length === 0 && d.relPills === 0, { relBadges: d.relBadges, relRows: d.relRows });
     },
@@ -425,7 +425,7 @@ const scenariosHttp = [
     expect: (d) => {
       check("truncated: red truncated badge", d.badges.some((b) => b.startsWith("size: truncated")), d.badges);
       check("truncated: still renders the vertex table", d.vertexRows === 1, d.vertexRows);
-      check("truncated: red tail badge (last row missing)", d.badges.some((b) => b === "tail: ✗ last row missing — body ends before it"), d.badges);
+      check("truncated: no tail pill (M7.2 — still in the JSON export)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("truncated: row-jump controls still present", d.hasRowJump === true, d.hasRowJump);
       check("truncated: caption is row 0 of 3", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 3"), d.fvCaption);
     },
@@ -435,7 +435,7 @@ const scenariosHttp = [
     expect: (d) => {
       check("midrow: status reports inspected", d.status.startsWith("Inspected"), d.status);
       check("midrow: size check flags truncation", d.badges.some((b) => b.startsWith("size: truncated")), d.badges);
-      check("midrow: red partial-tail badge (2 of 4 bytes)", d.badges.some((b) => b === "tail: ✗ last row partial (2 of 4 bytes)"), d.badges);
+      check("midrow: no tail pill (M7.2 — still in the JSON export)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("midrow: row-jump controls present", d.hasRowJump === true, d.hasRowJump);
       check("midrow: caption is row 0 of 2", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 2"), d.fvCaption);
       check("midrow: row 0 x = 1", d.fvFirst === "1", d.fvFirst);
@@ -448,7 +448,7 @@ const scenariosHttp = [
       check("ascii: Other elements card", d.cardTitles.includes("Other elements (1)"), d.cardTitles);
       check("ascii: no 3DGS badge", !d.badges.some((b) => b.includes("3DGS")), d.badges);
       check("ascii: list property row present", d.listRows.length === 1, d.listRows);
-      check("ascii: no tail badge (binary rows only)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
+      check("ascii: no tail pill (M7.2)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("ascii: no row preview card", d.fvCaption === null && d.hasRowJump === false, { fvCaption: d.fvCaption, hasRowJump: d.hasRowJump });
       check("ascii: no relighting verdict (render gate: not a candidate)", d.relBadges.length === 0 && d.relPills === 0, d.relBadges);
     },
@@ -465,7 +465,7 @@ const scenariosHttp = [
 const scenariosFile = [
   { name: "3dgs_standard.ply", embed: true, expect: (d) => check("file:// standard: 59/59 badge", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges) },
   { name: "3dgs_missing_rest.ply", embed: true, expect: (d) => check("file:// near: 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges) },
-  { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + optional badge (normal 3/3, material 0/2)", d.vertexRows === 62 && d.badges.some((b) => b === "optional: normal 3/3, material 0/2"), { rows: d.vertexRows, badges: d.badges }) },
+  { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + no optional pill (M7.2)", d.vertexRows === 62 && !d.badges.some((b) => b.startsWith("optional:")), { rows: d.vertexRows, badges: d.badges }) },
   { name: "3dgs_relightable.ply", embed: true, expect: (d) => check("file:// relightable: green relighting badge (supported 5/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges) },
   { name: "bad_magic.ply", embed: true, expect: (d) => check("file:// bad magic: error card", d.errMsg !== null, d.errMsg) },
 ];

@@ -1019,14 +1019,10 @@
       const badges = [badge(sc.badgeCls, `size: ${sc.message}`)];
       if (sig.badge === "standard") badges.push(badge("green", `${sig.label} (${sig.matched}/${sig.total})`));
       else if (sig.badge === "near") badges.push(badge("amber", `3DGS near-match (${sig.matched}/${sig.total})`));
-      // Optional signature properties (e.g. normals): only shown when at
-      // least one is present — absence of optionals is expected, not notable.
-      if (sig.badge !== "none" && sig.optionalMatched > 0) {
-        const optParts = sig.families.filter((f) => f.optional)
-          .map((f) => `${f.name} ${f.found.length}/${f.expected.length}`);
-        const optComplete = sig.optionalMatched === sig.optionalTotal;
-        badges.push(badge(optComplete ? "green" : "amber", `optional: ${optParts.join(", ")}`));
-      }
+      // M7.2: the `optional: …` summary pill is no longer rendered under any
+      // circumstances — optional families are visible only in the relighting
+      // sub-panel and the vertex table. optionalMatched/optionalTotal still
+      // feed the JSON export.
       // Relighting verdict (M7): shown for 3DGS candidates only — the pure
       // detectRelighting stays general; the candidacy gate is a render-layer
       // decision (confirmed scope).
@@ -1036,16 +1032,9 @@
         const relMark = r.verdict === "supported" ? "✓" : r.verdict === "partial" ? "◐" : "✗";
         badges.push(badge(relCls, `relighting: ${relMark} ${r.verdict} (${r.matched}/${r.total})`));
       }
-      // Tail check: pure arithmetic on header + file size — does the final
-      // row of the first element exist in full? Shown only for binary files
-      // (s.tail stays null for ascii/parse-failure states).
-      if (s.tail) {
-        if (s.tail.status === "ok") badges.push(badge("green", "tail: ✓ last row intact"));
-        else if (s.tail.status === "missing") badges.push(badge("red", "tail: ✗ last row missing — body ends before it"));
-        else if (s.tail.status === "truncated-row")
-          badges.push(badge("red", `tail: ✗ last row partial (${fmtInt(s.tail.available)} of ${fmtInt(s.tail.need)} bytes)`));
-        else badges.push(badge("gray", `tail: n/a (${s.tail.reason})`));
-      }
+      // M7.2: the `tail: …` summary pill is no longer rendered under any
+      // circumstances. tailCheckInfo still runs (pure arithmetic on header +
+      // file size) and `tail` remains in the JSON export; it just has no UI.
 
       const dt = (k) => el("dt", { text: k });
       const dd = (v) => el("dd", {}, v);
