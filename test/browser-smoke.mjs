@@ -219,6 +219,9 @@ const DOM_SNAPSHOT = `(() => {
     listRows: qsa("#results table.ptable tr").map(t).filter((x) => x.includes("list uchar int")),
     otherSummary: t(q("#results .pl")),
     famOpt: qsa("#results .famrow.optional").map(t),
+    relBadges: qsa("#results .badge").map(t).filter((b) => b.startsWith("relighting:")),
+    relPills: qsa("#results .relpill").length,
+    relRows: qsa("#results .relrow").map(t),
     // Global regression guard (user-reported bug: bare "null" on the page):
     // no visible text node whose ENTIRE content is exactly "null"/"undefined"
     // (that is exactly what Element.append(null) renders). Regions that echo
@@ -288,6 +291,13 @@ const scenariosHttp = [
       check("standard: 8 checklist rows (6 required + 2 optional)", d.fams.length === 8, d.fams);
       check("standard: both optional rows absent (normal + material)", d.famOpt.length === 2 && d.famOpt[0].startsWith("– absent") && d.famOpt[0].includes("normal") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
       check("standard: no optional summary badge (0/5 is not notable)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
+      check("standard: red relighting badge (not supported 0/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✗ not supported (0/5)", d.relBadges);
+      check("standard: sub-panel lists both groups missing with the full prop list",
+        d.relRows.length === 2 &&
+        d.relRows[0].includes("✗ missing") && d.relRows[0].includes("normal") && d.relRows[0].includes("0/3") && d.relRows[0].includes("missing: nx, ny, nz") &&
+        d.relRows[1].includes("✗ missing") && d.relRows[1].includes("material") && d.relRows[1].includes("0/2") && d.relRows[1].includes("missing: metallicFactor, roughnessFactor"),
+        d.relRows);
+      check("standard: relighting pills on the two optional checklist rows", d.relPills === 2, d.relPills);
       check("standard: row-jump controls present (input at 0)", d.hasRowJump === true && d.rowInput === "0", { hasRowJump: d.hasRowJump, rowInput: d.rowInput });
       check("standard: caption is row 0 of 3", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 3"), d.fvCaption);
       check("standard: first row decoded (59 cells)", d.fvCount === 59, d.fvCount);
@@ -315,6 +325,7 @@ const scenariosHttp = [
       check("near: both optional rows absent (normal + material)", d.famOpt[0].includes("normal") && d.famOpt[1].includes("material"), d.famOpt);
       check("near: green tail badge (both rows present)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
       check("near: no standard badge", !d.badges.some((b) => b.includes("standard signature")), d.badges);
+      check("near: red relighting badge (not supported 0/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✗ not supported (0/5)", d.relBadges);
     },
   },
   {
@@ -329,6 +340,12 @@ const scenariosHttp = [
       check("normals: row 0 last value = 61 (rot_3)", d.fvLast === "61", d.fvLast);
       check("normals: size matches actual (248 B/row)", d.badges.some((b) => b.startsWith("size: expected") && b.includes("matches actual")), d.badges);
       check("normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("normals: amber relighting badge (partial 3/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ◐ partial (3/5)", d.relBadges);
+      check("normals: sub-panel — normals complete, material group is the gap",
+        d.relRows.length === 2 &&
+        d.relRows[0].includes("✓ complete") && d.relRows[0].includes("3/3") &&
+        d.relRows[1].includes("✗ missing") && d.relRows[1].includes("0/2") && d.relRows[1].includes("missing: metallicFactor, roughnessFactor"),
+        d.relRows);
     },
   },
   {
@@ -339,6 +356,34 @@ const scenariosHttp = [
       check("partial normals: 60 property rows", d.vertexRows === 60, d.vertexRows);
       check("partial normals: normal row partial with missing list, material absent", d.famOpt.length === 2 && d.famOpt[0].includes("partial") && d.famOpt[0].includes("missing: ny, nz") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
       check("partial normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+      check("partial normals: amber relighting badge (partial 1/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ◐ partial (1/5)", d.relBadges);
+    },
+  },
+  {
+    name: "3dgs_relightable.ply",
+    expect: (d) => {
+      check("relightable: standard 59/59 badge (material props don't affect it)", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
+      check("relightable: green optional badge (normal 3/3, material 2/2)", d.badges.some((b) => b === "optional: normal 3/3, material 2/2"), d.badges);
+      check("relightable: green relighting badge (supported 5/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges);
+      check("relightable: 64 property rows", d.vertexRows === 64, d.vertexRows);
+      check("relightable: sub-panel — both groups complete",
+        d.relRows.length === 2 &&
+        d.relRows[0].includes("✓ complete") && d.relRows[0].includes("3/3") &&
+        d.relRows[1].includes("✓ complete") && d.relRows[1].includes("2/2"),
+        d.relRows);
+      check("relightable: two relighting pills on the optional rows", d.relPills === 2, d.relPills);
+      check("relightable: first row decoded (64 cells)", d.fvCount === 64, d.fvCount);
+      check("relightable: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
+    },
+  },
+  {
+    name: "ascii_relightable_mesh.ply",
+    expect: (d) => {
+      check("ascii relightable mesh: no 3DGS badge (no SH props)", !d.badges.some((b) => b.includes("3DGS")), d.badges);
+      check("ascii relightable mesh: no relighting UI (candidates only — the core says 5/5 but the render gate hides it)",
+        d.relBadges.length === 0 && d.relRows.length === 0 && d.relPills === 0,
+        { relBadges: d.relBadges, relRows: d.relRows, relPills: d.relPills });
+      check("ascii relightable mesh: 8 vertex property rows", d.vertexRows === 8, d.vertexRows);
     },
   },
   {
@@ -351,6 +396,7 @@ const scenariosHttp = [
       check("weird props: first row partial (2 cells before the bad list)", d.fvCount === 2, d.fvCount);
       check("weird props: gray tail n/a badge (list rows)", d.badges.some((b) => b === "tail: n/a (variable-length rows)"), d.badges);
       check("weird props: no row-jump controls", d.hasRowJump === false, d.hasRowJump);
+      check("weird props: no relighting verdict (not a 3DGS candidate)", d.relBadges.length === 0 && d.relRows.length === 0 && d.relPills === 0, { relBadges: d.relBadges, relRows: d.relRows });
     },
   },
   {
@@ -399,6 +445,7 @@ const scenariosHttp = [
       check("ascii: list property row present", d.listRows.length === 1, d.listRows);
       check("ascii: no tail badge (binary rows only)", !d.badges.some((b) => b.startsWith("tail:")), d.badges);
       check("ascii: no row preview card", d.fvCaption === null && d.hasRowJump === false, { fvCaption: d.fvCaption, hasRowJump: d.hasRowJump });
+      check("ascii: no relighting verdict (render gate: not a candidate)", d.relBadges.length === 0 && d.relPills === 0, d.relBadges);
     },
   },
   {
@@ -414,6 +461,7 @@ const scenariosFile = [
   { name: "3dgs_standard.ply", embed: true, expect: (d) => check("file:// standard: 59/59 badge", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges) },
   { name: "3dgs_missing_rest.ply", embed: true, expect: (d) => check("file:// near: 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges) },
   { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + optional badge (normal 3/3, material 0/2)", d.vertexRows === 62 && d.badges.some((b) => b === "optional: normal 3/3, material 0/2"), { rows: d.vertexRows, badges: d.badges }) },
+  { name: "3dgs_relightable.ply", embed: true, expect: (d) => check("file:// relightable: green relighting badge (supported 5/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges) },
   { name: "bad_magic.ply", embed: true, expect: (d) => check("file:// bad magic: error card", d.errMsg !== null, d.errMsg) },
 ];
 

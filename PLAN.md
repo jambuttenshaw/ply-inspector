@@ -115,6 +115,50 @@ when only part of an optional set is present) appears only when at least one opt
 property is found. Optional properties count toward the exact size check like any other
 property. More optional sets can be added to the same signature table.
 
+**Relighting capability (M7).** A distinct question from the signature badge:
+*is this PLY relightable?* For that use case a PLY is **relightable** only when both
+of the *optional* signature families are fully present on the vertex element — treated
+together as one **"relighting required" property group**:
+
+| Relighting-required group | Properties | Count |
+|---|---|---|
+| Normals | `nx`, `ny`, `nz` | 3 |
+| Material (PBR factors) | `metallicFactor`, `roughnessFactor` | 2 |
+
+Modeling: a small capability table (`FEATURES`) maps a capability to the signature
+family keys it requires — `relighting: { requires: ["normal", "material"] }` — and a
+pure `detectRelighting(elements)` computes, per required group, `found`/`missing`/
+`complete` plus a rollup (5 properties total). Design decisions (scope and
+placement confirmed with the user; remaining items are v1 defaults):
+
+- **Shown for 3DGS candidates only (confirmed).** The verdict renders only when the
+  file triggers 3DGS signature recognition (badge ≠ `none`); files with no vertex
+  element also get no verdict. The pure `detectRelighting` itself stays general (it
+  checks property presence on the first `vertex` element, with no candidacy gate) —
+  the restriction is a render-layer decision, so the core stays unit-testable on any
+  element list. The verdict never changes the standard/near badge or the required
+  matched/total counts (59); the two families stay `optional` in the signature table.
+- **Name-based**, consistent with family matching (property *types* are not checked
+  in v1 — a `metallicFactor` declared `int` still counts as present).
+- **Verdict states:** `supported` (5/5) / `partial` (1–4/5, lists what is missing) /
+  `not supported` (0/5). With multiple `vertex` elements, the first one is used —
+  same convention as the signature.
+- **UI surface (confirmed: sub-panel in the signature checklist card):**
+  1. a **"Relighting required" sub-panel at the end of the 3DGS signature
+     checklist card** — a visually distinct boxed section with the verdict badge
+     (`✓ supported (5/5)` green / `◐ partial (3/5)` amber / `✗ not supported (0/5)`
+     red), a one-line requirement note, and one row per group (normals, material)
+     with found ratio + missing property names. Chosen over a separate card so the
+     verdict sits next to the two family rows that drive it — when the answer is
+     "no", the *why* is immediately visible;
+  2. a compact **file-summary badge** (`relighting: ✓ supported (5/5)` /
+     `relighting: ◐ partial (3/5)` / `relighting: ✗ not supported (0/5)`) for
+     at-a-glance identification, mirroring the existing `optional:` badge;
+  3. a `relighting` pill on the `normal`/`material` rows of the checklist (next to
+     the existing `optional` pill), marking them as the relighting-required group
+     in place.
+  The verdict object is added to the JSON export.
+
 ## 4. Architecture
 
 ### 4.1 The key performance insight: header-only parsing
@@ -148,6 +192,11 @@ index.html
    │    → { exact?, fixedBytes, variable?, bytesPerElement: {name: n} }
    ├── PLY.detect3DGS(elements)
    │    → { badge, families: [{name, expected, found, missing, extra}] }
+   ├── PLY.FEATURES       capability table (M7): relighting → required family keys
+   ├── PLY.detectRelighting(elements)           (M7, relighting verdict)
+   │    → { label, supported, matched, total, missing,
+   │        groups: [{key, name, expected, found, missing, complete}] }
+   │    • name-based, first `vertex` element; render layer gates display on badge ≠ none
    ├── PLY.decodeFirstVertex(file, header)      (M5, first-row preview)
    ├── PLY.rowJumpInfo(element)                 (M6, row-N preview)
    │    → { jumpable, rowBytes, reason } — fixed-size rows only (no lists,
@@ -157,7 +206,8 @@ index.html
    │    • pure arithmetic, no decoding — powers the tail badge
    ├── PLY.decodeRowAt(file, header, rowIndex)  (M6, one max(64 KB, rowBytes) slice)
    ├── UI: drop zone / file input wiring, render(state), copy-CSV, export-JSON
-   └── export: globalThis.PLYInspector = { parseHeader, TYPES, detect3DGS, … }
+   └── export: globalThis.PLYInspector = { parseHeader, TYPES, detect3DGS,
+         detectRelighting, FEATURES, … }
         + DOM init guarded by `typeof document !== "undefined"`
 ```
 
@@ -169,8 +219,9 @@ shipping code (§8) — no build step, no code duplication.
 ```
 File (drag-drop / picker)
   → slice(0, window) → parseHeader
-  → expectedSize + detect3DGS
-  → render(summary card, vertex table, other elements, size-check, raw header)
+  → expectedSize + detect3DGS + detectRelighting
+  → render(summary card, signature card (with "Relighting required" sub-panel),
+     vertex table, other elements, size-check, raw header)
 ```
 
 Parse result is plain data; rendering is a pure-ish `render(state)` so state changes
@@ -257,6 +308,24 @@ Details:
   property line (`property float f_dc_0`) to the clipboard.
 - **Size-check badge:** `✓ matches` / `✗ truncated (expected ≥ N)` / `✗ larger than
   expected` / `– variable-length rows, exact check n/a` / `– n/a for ASCII`.
+- **Relighting (M7):** shown for 3DGS candidates only (signature badge ≠ `none`).
+  A compact file-summary badge `relighting: ✓ supported (5/5)` (green) /
+  `relighting: ◐ partial (3/5)` (amber) / `relighting: ✗ not supported (0/5)` (red)
+  gives the at-a-glance answer; the detail lives in a **"Relighting required"
+  sub-panel at the end of the signature checklist card** — a visually distinct
+  boxed section with the verdict badge and one row per required group:
+
+  ```
+  ┌ Relighting required ──────────────────────── [◐ partial (3/5)] ┐
+  │ requires per-vertex normals + PBR material factors             │
+  │   ✓ normals   3/3                                              │
+  │   ✗ material  0/2   missing: metallicFactor, roughnessFactor   │
+  └────────────────────────────────────────────────────────────────┘
+  ```
+
+  In the signature checklist, the `normal`/`material` rows gain a `relighting` pill
+  beside the existing `optional` pill, marking the two optional families as the
+  relighting-required group in place.
 - **Comments/obj_info:** collapsed list, verbatim, monospace.
 - **Raw header:** verbatim text in a `<pre>`, byte length labeled, copy button.
 - **Errors:** a persistent panel with line numbers for hard errors (rendering of that
@@ -286,6 +355,8 @@ Fixtures (`test/fixtures/`, generated by `scripts/make-fixtures.mjs` plus a few 
 | `3dgs_standard.ply` | 59-property standard header + 3 binary rows → table, 236 B/vertex, size check, 3DGS badge |
 | `3dgs_with_normals.ply` | 62-property standard + optional normals (INRIA layout) → standard badge + `optional: normal 3/3`, 248 B/vertex |
 | `3dgs_normals_partial.ply` | 60-property standard + `nx` only → badge stays standard, optional 1/3 partial |
+| `3dgs_relightable.ply` | 64-property standard + normals + material (INRIA layout) → standard badge + `relighting: supported (5/5)`, 256 B/vertex |
+| `ascii_relightable_mesh.ply` | ASCII mesh with normals + material factors, no SH props → 3DGS badge `none`; core `detectRelighting` still reports `supported (5/5)` — display is gated to candidates by the render layer, so this fixture pins the core-vs-UI split |
 | `3dgs_missing_rest.ply` | Near-miss signature → per-family checklist, no false badge |
 | `ascii_mesh.ply` | ASCII format, face element with `property list`, color/normal props |
 | `big_endian.ply` | BE binary, `double` + `int` + `uchar` mix |
@@ -299,7 +370,11 @@ Fixtures (`test/fixtures/`, generated by `scripts/make-fixtures.mjs` plus a few 
 | `tail_midrow.ply` | Binary header valid, body ends mid-row (1 full row + 2 stray bytes) → tail check `truncated-row` (2 of 4 B) + size check truncated |
 
 The row preview (M5/M6) gets its own decode tests (LE/BE, int widths, list counts,
-last-row jumps, tail verdicts).
+last-row jumps, tail verdicts). The relighting verdict (M7) gets its own `detectRelighting`
+tests — supported / partial / not supported / no vertex element / multiple vertex
+elements — on the new fixtures plus existing ones (`3dgs_standard` → 0/5 not
+supported, `3dgs_with_normals` → 3/5 partial, `ascii_mesh` → 3/5 partial), and the
+JSON export gains the verdict object.
 Manual smoke: open `index.html` via `file://` in Chrome and Edge, drag a real 3DGS
 `output.ply` (≥ 200 MB) — time it, eyeball the table.
 
@@ -328,6 +403,7 @@ dsh-test/
 | M4 | 3DGS recognition | Signature badge, family grouping + colors, per-family checklist for near-misses | S |
 | M5 | Polish & stretch | First-vertex preview, clipboard-on-row-click, a11y pass, empty/error states, README polish | S–M |
 | M6 | Row-N preview & tail check | `rowJumpInfo`/`tailCheckInfo`/`decodeRowAt`, row-jump form + **Last** button, tail badge in the summary, `rowJump`/`lastRow`/`tail` in JSON export, `tail_midrow` fixture | S |
+| M7 | Relighting capability | `FEATURES` table + pure `detectRelighting` (tested); file-summary relighting badge; "Relighting required" sub-panel in the signature checklist card (candidates only); `relighting` pills on the normal/material checklist rows; verdict in JSON export; `3dgs_relightable` + `ascii_relightable_mesh` fixtures | S–M |
 
 S ≈ under an hour of implementation; M ≈ a focused session. Total single-file size target
 < 60 KB, no external requests.

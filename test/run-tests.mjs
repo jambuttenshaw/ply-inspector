@@ -98,8 +98,9 @@ const P = loadInspector();
 // ---------------------------------------------------------------------------
 test("exports: PLYInspector surface is complete", () => {
   assertEq(P.version, undefined, "no version pin in v1 core (kept dynamic)");
-  for (const k of ["TYPES", "SIGNATURES", "parseHeader", "expectedSize", "sizeCheck", "detect3DGS", "decodeRow", "rowJumpInfo", "tailCheckInfo", "decodeRowAt"])
+  for (const k of ["TYPES", "SIGNATURES", "FEATURES", "parseHeader", "expectedSize", "sizeCheck", "detect3DGS", "detectRelighting", "decodeRow", "rowJumpInfo", "tailCheckInfo", "decodeRowAt"])
     assert(P[k], `missing export: ${k}`);
+  assertDeepEq(P.FEATURES.relighting.requires, ["normal", "material"], "M7 capability table");
   assertEq(Object.keys(P.TYPES).length, 16, "16 type tokens");
   assertEq(P.TYPES.float.normalized, "float32");
   assertEq(P.TYPES.uint.bytes, 4);
@@ -311,6 +312,115 @@ test("ascii_mesh: ASCII format, list property, size check n/a, no 3DGS badge", (
   const s = P.detect3DGS(h.elements);
   assertEq(s.badge, "none", "plain mesh with normals is not a 3DGS candidate — normals do not confer candidacy");
   assertEq(Object.keys(s.familyOf).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Relighting (M7) — detectRelighting
+// ---------------------------------------------------------------------------
+test("3dgs_relightable: 64 props, 256 B/vertex, standard badge + relighting 5/5", () => {
+  const buf = fx("3dgs_relightable.ply");
+  const h = P.parseHeader(buf);
+  const v = h.elements[0];
+  assertEq(v.properties.length, 64);
+  assertEq(v.properties[62].name, "metallicFactor", "material factors at the end");
+  assertEq(v.properties[63].name, "roughnessFactor");
+  const e = P.expectedSize(h.elements, h.headerByteLength, h.format.kind);
+  assertEq(e.exact, true);
+  assertEq(e.bytesPerElement["vertex"].fixed, 256, "236 + 12 normals + 8 material");
+  assertEq(P.sizeCheck(e, buf.length).status, "match");
+  const s = P.detect3DGS(h.elements);
+  assertEq(s.badge, "standard", "material props do not affect the standard badge");
+  assertEq(s.matched, 59, "required matched/total untouched");
+  assertEq(s.optionalMatched, 5, "all optionals present");
+  const r = P.detectRelighting(h.elements);
+  assertEq(r.label, "Relighting required");
+  assertEq(r.supported, true);
+  assertEq(r.verdict, "supported");
+  assertEq(r.matched, 5);
+  assertEq(r.total, 5);
+  assertDeepEq(r.missing, []);
+  assertEq(r.groups.length, 2);
+  assertEq(r.groups[0].key, "normal");
+  assertEq(r.groups[1].key, "material", "group order follows FEATURES.relighting.requires");
+  for (const g of r.groups) assertEq(g.complete, true, `group ${g.key} complete`);
+});
+
+test("3dgs_relightable: first-row decode (value = r*100 + i, 256 B/row)", () => {
+  const buf = fx("3dgs_relightable.ply");
+  const h = P.parseHeader(buf);
+  const body = buf.subarray(h.headerByteLength);
+  const r0 = P.decodeRow(body, h.elements[0], false);
+  assertEq(r0.complete, true);
+  assertEq(r0.values.length, 64);
+  assertEq(r0.values[3].value, 3, "row0 nx");
+  assertEq(r0.values[62].value, 62, "row0 metallicFactor");
+  assertEq(r0.values[63].value, 63, "row0 roughnessFactor");
+  assertEq(r0.bytesRead, 256);
+  const r1 = P.decodeRow(body.subarray(256), h.elements[0], false);
+  assertEq(r1.values[63].value, 163, "row1 roughnessFactor");
+});
+
+test("3dgs_standard: relighting not supported (0/5), all five props listed missing", () => {
+  const h = P.parseHeader(fx("3dgs_standard.ply"));
+  const r = P.detectRelighting(h.elements);
+  assertEq(r.supported, false);
+  assertEq(r.verdict, "not supported");
+  assertEq(r.matched, 0);
+  assertEq(r.total, 5);
+  assertDeepEq(r.missing, ["nx", "ny", "nz", "metallicFactor", "roughnessFactor"]);
+  for (const g of r.groups) assertEq(g.complete, false);
+});
+
+test("3dgs_with_normals: relighting partial (3/5), material group is the gap", () => {
+  const h = P.parseHeader(fx("3dgs_with_normals.ply"));
+  const r = P.detectRelighting(h.elements);
+  assertEq(r.verdict, "partial");
+  assertEq(r.matched, 3);
+  assertDeepEq(r.groups[0].found, ["nx", "ny", "nz"]);
+  assertEq(r.groups[0].complete, true);
+  assertDeepEq(r.groups[1].missing, ["metallicFactor", "roughnessFactor"]);
+  assertDeepEq(r.missing, ["metallicFactor", "roughnessFactor"]);
+});
+
+test("ascii_mesh: badge none, but core reports partial (3/5) — core-vs-UI split", () => {
+  const h = P.parseHeader(fx("ascii_mesh.ply"));
+  assertEq(P.detect3DGS(h.elements).badge, "none", "render layer: no verdict for non-candidates");
+  const r = P.detectRelighting(h.elements);
+  assertEq(r.verdict, "partial", "core has no candidacy gate");
+  assertEq(r.matched, 3);
+  assertDeepEq(r.missing, ["metallicFactor", "roughnessFactor"]);
+});
+
+test("ascii_relightable_mesh: badge none + core relighting supported (5/5)", () => {
+  const h = P.parseHeader(fx("ascii_relightable_mesh.ply"));
+  assertEq(h.format.kind, "ascii");
+  assertEq(P.detect3DGS(h.elements).badge, "none", "no SH props -> not a 3DGS candidate");
+  const r = P.detectRelighting(h.elements);
+  assertEq(r.supported, true);
+  assertEq(r.verdict, "supported");
+  assertEq(r.matched, 5);
+});
+
+test("detectRelighting: no vertex element -> null; first of multiple vertex elements wins", () => {
+  assertEq(P.detectRelighting([{ name: "face", count: 1, properties: [{ name: "nx" }] }]), null, "no vertex element -> no verdict");
+  const mk = (names) => ({ name: "vertex", count: 1, properties: names.map((n) => ({ name: n })) });
+  const two = [
+    mk(["nx", "ny", "nz", "metallicFactor", "roughnessFactor"]),
+    { name: "face", count: 1, properties: [] },
+    mk(["x", "y", "z"]), // second vertex has nothing — must be ignored
+  ];
+  const r = P.detectRelighting(two);
+  assertEq(r.verdict, "supported", "first vertex element is used, same convention as the signature");
+  assertEq(r.matched, 5);
+});
+
+test("detectRelighting: name-based only — int-typed factors still count in v1", () => {
+  const v = { name: "vertex", count: 1, properties: [
+    { name: "nx", type: P.TYPES.int }, { name: "ny", type: P.TYPES.int }, { name: "nz", type: P.TYPES.int },
+    { name: "metallicFactor", type: P.TYPES.int }, { name: "roughnessFactor", type: P.TYPES.int },
+  ]};
+  const r = P.detectRelighting([v]);
+  assertEq(r.verdict, "supported", "property types are not checked in v1");
 });
 
 // ---------------------------------------------------------------------------

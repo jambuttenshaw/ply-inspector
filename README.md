@@ -45,6 +45,15 @@ on demand, from a single bounded slice.
   dashed family grouping in the vertex table. The signature table is a clearly
   delimited `const` (PLAN §3.3 / §11.3) — add 2DGS/Mip-Splatting/quantized
   variants (and more optional sets) there.
+- **Relighting check** — for 3DGS candidates only, an at-a-glance summary badge
+  (`relighting: ✓ supported (5/5)` green / `◐ partial (3/5)` amber /
+  `✗ not supported (0/5)` red) answers whether the splats can be relit: a PLY is
+  relightable only when it carries per-vertex **normals** (`nx`/`ny`/`nz`) *and*
+  PBR **material factors** (`metallicFactor`/`roughnessFactor`). The signature
+  checklist card ends with a "Relighting required" sub-panel that names exactly
+  which of the two groups is missing when the answer is no, and the
+  `normal`/`material` checklist rows are tagged with a `relighting` pill. The
+  verdict is in the JSON export too.
 - **Vertex property tables** — every property with its raw PLY type, normalized
   type (`float` → `float32`), byte width, byte offset (exact until the first
   `property list`, marked `≈` after), and color-coded 3DGS family group.
@@ -70,7 +79,7 @@ on demand, from a single bounded slice.
 ```
 index.html               the app (deliverable)
 PLAN.md                  implementation plan
-scripts/make-fixtures.mjs  regenerates test/fixtures/ (16 fixtures)
+scripts/make-fixtures.mjs  regenerates test/fixtures/ (18 fixtures)
 test/run-tests.mjs       core test suite — runs the inline <script> in a Node vm
 test/browser-smoke.mjs   optional UI smoke test — headless Chrome/Edge over CDP
 test/fixtures/           generated PLY fixtures (do not edit by hand)
@@ -80,8 +89,8 @@ test/fixtures/           generated PLY fixtures (do not edit by hand)
 
 ```
 node scripts/make-fixtures.mjs   # regenerate fixtures (already checked in)
-node test/run-tests.mjs          # 41 core tests, no browser needed
-node test/browser-smoke.mjs      # 96 UI assertions, needs Chrome or Edge
+node test/run-tests.mjs          # 49 core tests, no browser needed
+node test/browser-smoke.mjs      # 120 UI assertions, needs Chrome or Edge
 ```
 
 The core suite executes the literal inline script of `index.html` in a Node `vm`

@@ -172,6 +172,21 @@
   table.ptable tr.opt td { border-bottom: 1px dashed rgba(48,54,61,.55); }
   table.ptable tr.opt td.name { color: var(--muted); }
 
+  /* relighting capability (M7): pill + sub-panel */
+  .famrow .relpill { font-size: 10px; color: var(--amber); border: 1px solid rgba(210,153,34,.45); border-radius: 999px; padding: 0 6px; letter-spacing: .3px; }
+  .relpanel { margin-top: 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel2); padding: 10px 12px; }
+  .relhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+  .relhead .reltitle { font-weight: 700; font-size: 13px; }
+  .relcheck { display: grid; gap: 8px; margin-top: 8px; }
+  .relrow { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .relrow .st { font-weight: 700; font-size: 12px; }
+  .relrow .st.ok { color: var(--green); }
+  .relrow .st.part { color: var(--amber); }
+  .relrow .st.no { color: var(--red); }
+  .relrow .nm { font-weight: 600; font-size: 12.5px; }
+  .relrow .ratio { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .relrow .miss { font-family: var(--mono); font-size: 11.5px; color: var(--faint); word-break: break-all; flex-basis: 100%; }
+
   /* ---------- buttons ---------- */
   .btn {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
@@ -588,6 +603,45 @@
     return { label: sig.label, badge, matched, total: SIG_TOTAL, optionalMatched, optionalTotal, families, familyOf, isStandard, extras, vertexElement: vertex };
   }
 
+  // --- relighting capability (M7, PLAN §3.3) -------------------------------
+  // Capability table: a feature maps to the signature family keys it
+  // requires. A new capability (e.g. transmission) is one more entry here —
+  // the families themselves stay `optional` in SIGNATURES and the standard
+  // badge / 59 matched-total are never affected by this layer.
+  const FEATURES = {
+    relighting: { requires: ["normal", "material"] },
+  };
+
+  // detectRelighting(elements) -> {label, supported, verdict, matched, total,
+  // missing, groups: [{key, name, expected, found, missing, complete}]} | null
+  // null means "no verdict" (no `vertex` element). Pure and general: it checks
+  // property NAMES on the first `vertex` element (types are not checked in v1,
+  // consistent with family matching) and applies no candidacy gate — showing
+  // the verdict for 3DGS candidates only is a render-layer decision.
+  // verdict: "supported" (all required props present) | "partial" (1..n-1) |
+  // "not supported" (0); matched/total count ALL props of the required groups.
+  function detectRelighting(elements) {
+    const vertex = elements.find((e) => e.name === "vertex") || null;
+    if (!vertex) return null;
+    const present = new Set();
+    for (const p of vertex.properties) if (p.name) present.add(p.name);
+    const sigFamilies = SIGNATURES["3dgs-standard"].families;
+    const groups = FEATURES.relighting.requires.map((key) => {
+      const f = sigFamilies.find((x) => x.key === key);
+      const found = f.props.filter((n) => present.has(n));
+      const missing = f.props.filter((n) => !present.has(n));
+      return { key: f.key, name: f.name, expected: f.props.slice(), found, missing, complete: missing.length === 0 };
+    });
+    const total = groups.reduce((n, g) => n + g.expected.length, 0);
+    const matched = groups.reduce((n, g) => n + g.found.length, 0);
+    const supported = matched === total;
+    const verdict = supported ? "supported" : matched > 0 ? "partial" : "not supported";
+    return {
+      label: "Relighting required", supported, verdict, matched, total,
+      missing: groups.flatMap((g) => g.missing), groups,
+    };
+  }
+
   // --- first-row decode (PLAN §4.5) ---------------------------------------
   // decodeRow is pure (takes a Uint8Array) so Node can test it; the browser
   // wrapper decodeFirstVertex does the bounded file read.
@@ -710,8 +764,8 @@
 
   // --- export surface for tests / console use ---
   const PLY = {
-    TYPES, SIGNATURES,
-    parseHeader, expectedSize, sizeCheck, detect3DGS,
+    TYPES, SIGNATURES, FEATURES,
+    parseHeader, expectedSize, sizeCheck, detect3DGS, detectRelighting,
     decodeRow, decodeFirstVertex,
     rowJumpInfo, tailCheckInfo, decodeRowAt,
     PlyError,
@@ -869,7 +923,8 @@
       const next = {
         fileName: file.name, fileSize: file.size, file,
         header: null, rawHeader: null, sizeCheck: null,
-        signature: null, firstVertex: null, rowJump: null, lastRow: null, tail: null,
+        signature: null, relighting: null,
+        firstVertex: null, rowJump: null, lastRow: null, tail: null,
         error: null, parseMs: null,
       };
       try {
@@ -879,6 +934,7 @@
           .decode(new Uint8Array(await file.slice(0, header.headerByteLength).arrayBuffer()));
         next.sizeCheck = computeSizeCheck(header, file.size);
         next.signature = PLY.detect3DGS(header.elements);
+        next.relighting = PLY.detectRelighting(header.elements);
         if (header.format.kind !== "ascii") {
           const el0 = header.elements[0];
           next.rowJump = el0 ? PLY.rowJumpInfo(el0) : { jumpable: false, rowBytes: 0, reason: "no rows" };
@@ -974,6 +1030,15 @@
         const optComplete = sig.optionalMatched === sig.optionalTotal;
         badges.push(badge(optComplete ? "green" : "amber", `optional: ${optParts.join(", ")}`));
       }
+      // Relighting verdict (M7): shown for 3DGS candidates only — the pure
+      // detectRelighting stays general; the candidacy gate is a render-layer
+      // decision (confirmed scope).
+      if (sig.badge !== "none" && s.relighting) {
+        const r = s.relighting;
+        const relCls = r.verdict === "supported" ? "green" : r.verdict === "partial" ? "amber" : "red";
+        const relMark = r.verdict === "supported" ? "✓" : r.verdict === "partial" ? "◐" : "✗";
+        badges.push(badge(relCls, `relighting: ${relMark} ${r.verdict} (${r.matched}/${r.total})`));
+      }
       // Tail check: pure arithmetic on header + file size — does the final
       // row of the first element exist in full? Shown only for binary files
       // (s.tail stays null for ascii/parse-failure states).
@@ -1004,6 +1069,7 @@
     function renderSignatureCard(s) {
       const sig = s.signature;
       if (sig.badge === "none") return null;
+      const relightingKeys = new Set(PLY.FEATURES.relighting.requires);
       const rows = sig.families.map((f) => {
         const complete = f.missing.length === 0 && f.found.length > 0;
         let stCls, stTxt;
@@ -1021,6 +1087,7 @@
           el("span", { class: `st ${stCls}` }, stTxt),
           el("span", { class: "nm", style: `color:${f.color}` }, f.name),
           f.optional ? el("span", { class: "optpill" }, "optional") : null,
+          f.optional && relightingKeys.has(f.key) ? el("span", { class: "relpill" }, "relighting") : null,
           el("span", { class: "ratio" }, `${f.found.length}/${f.expected.length}`),
         );
         if (f.missing.length) row.append(el("span", { class: "miss" }, `missing: ${f.missing.join(", ")}`));
@@ -1032,7 +1099,33 @@
       const head = el("h2", {},
         sig.badge === "standard" ? "3DGS signature — " : "3DGS signature checklist — ",
         el("span", { class: "count" }, `${sig.matched}/${sig.total}`));
-      return card([head], el("div", {}, extraNote, el("div", { class: "famcheck" }, rows)));
+      // "Relighting required" sub-panel (M7), at the end of the card so the
+      // verdict sits next to the normal/material family rows that drive it:
+      // when the answer is "no", the missing properties are visible in place.
+      let relPanel = null;
+      if (s.relighting) {
+        const r = s.relighting;
+        const relCls = r.verdict === "supported" ? "green" : r.verdict === "partial" ? "amber" : "red";
+        const relMark = r.verdict === "supported" ? "✓" : r.verdict === "partial" ? "◐" : "✗";
+        const groupRows = r.groups.map((g) => {
+          const stCls = g.complete ? "ok" : g.found.length > 0 ? "part" : "no";
+          const stTxt = g.complete ? "✓ complete" : g.found.length > 0 ? "◐ partial" : "✗ missing";
+          const row = el("div", { class: "relrow" },
+            el("span", { class: `st ${stCls}` }, stTxt),
+            el("span", { class: "nm" }, g.name),
+            el("span", { class: "ratio" }, `${g.found.length}/${g.expected.length}`),
+          );
+          if (g.missing.length) row.append(el("span", { class: "miss" }, `missing: ${g.missing.join(", ")}`));
+          return row;
+        });
+        relPanel = el("div", { class: "relpanel" },
+          el("div", { class: "relhead" },
+            el("span", { class: "reltitle" }, "Relighting required"),
+            badge(relCls, `${relMark} ${r.verdict} (${r.matched}/${r.total})`)),
+          el("p", { class: "note" }, "Requires per-vertex normals (nx, ny, nz) plus PBR material factors (metallicFactor, roughnessFactor)."),
+          el("div", { class: "relcheck" }, groupRows));
+      }
+      return card([head], el("div", {}, extraNote, el("div", { class: "famcheck" }, rows), relPanel));
     }
 
     function propertyTable(element, signature, familyOf) {
@@ -1283,6 +1376,7 @@
           expectedTotal: s.sizeCheck.expectedTotal,
         },
         signature: s.signature,
+        relighting: s.relighting,
         firstVertex: s.firstVertex,
         rowJump: s.rowJump,
         lastRow: s.lastRow,
