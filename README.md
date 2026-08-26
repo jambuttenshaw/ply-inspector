@@ -39,10 +39,10 @@ on demand, from a single bounded slice.
   (`nx`/`ny`/`nz`) written by the reference 3DGS exporter, and the **material**
   pair (`metallicFactor`/`roughnessFactor`) used by PBR splat exporters. When
   present you get a summary badge (`optional: normal 3/3, material 0/2`, amber
-  if any optional set is incomplete), a dashed "optional" row per family in the
-  signature checklist
-  (gray `– absent` instead of a red `missing` when not present), and a distinct
-  dashed family grouping in the vertex table. The signature table is a clearly
+  if any optional set is incomplete); the families themselves are listed only
+  inside the "Relighting required" sub-panel — their sole feature group — never
+  in the main signature checklist (required families only, 6 rows), and they
+  keep a distinct dashed family grouping in the vertex table. The signature table is a clearly
   delimited `const` (PLAN §3.3 / §11.3) — add 2DGS/Mip-Splatting/quantized
   variants (and more optional sets) there.
 - **Relighting check** — for 3DGS candidates only, an at-a-glance summary badge
@@ -51,9 +51,8 @@ on demand, from a single bounded slice.
   relightable only when it carries per-vertex **normals** (`nx`/`ny`/`nz`) *and*
   PBR **material factors** (`metallicFactor`/`roughnessFactor`). The signature
   checklist card ends with a "Relighting required" sub-panel that names exactly
-  which of the two groups is missing when the answer is no, and the
-  `normal`/`material` checklist rows are tagged with a `relighting` pill. The
-  verdict is in the JSON export too.
+  which of the two groups is missing when the answer is no. The verdict is in
+  the JSON export too.
 - **Vertex property tables** — every property with its raw PLY type, normalized
   type (`float` → `float32`), byte width, byte offset (exact until the first
   `property list`, marked `≈` after), and color-coded 3DGS family group.
@@ -90,7 +89,7 @@ test/fixtures/           generated PLY fixtures (do not edit by hand)
 ```
 node scripts/make-fixtures.mjs   # regenerate fixtures (already checked in)
 node test/run-tests.mjs          # 49 core tests, no browser needed
-node test/browser-smoke.mjs      # 120 UI assertions, needs Chrome or Edge
+node test/browser-smoke.mjs      # 121 UI assertions, needs Chrome or Edge
 ```
 
 The core suite executes the literal inline script of `index.html` in a Node `vm`

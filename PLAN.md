@@ -106,9 +106,10 @@ per-family checklist (present / missing); anything else (meshes, plain point clo
 **Optional properties (addendum).** Signature families may be marked `optional` in the
 signature table. They are part of the signature but never required: they do not change
 the standard/near badge or the matched/total count (which stays required-only, 59), are
-reported per-family in the checklist with distinct styling (dashed row, "optional" pill,
-gray `– absent` instead of red `✗ missing`), and get a distinct family grouping in the
-property table. The first optional set is the per-splat **normal** (`nx`, `ny`, `nz` —
+rendered only inside the feature group(s) that require them — for the shipped table,
+the "Relighting required" sub-panel (M7.1: optional families never appear in the main
+signature checklist, which lists required families only) — and get a distinct family
+grouping in the property table. The first optional set is the per-splat **normal** (`nx`, `ny`, `nz` —
 float, 12 bytes/vertex), written by the reference 3DGS exporter right after `x/y/z`
 (62 properties × 4 B = 248 B/vertex). A summary badge (`optional: normal 3/3`, amber
 when only part of an optional set is present) appears only when at least one optional
@@ -154,10 +155,44 @@ placement confirmed with the user; remaining items are v1 defaults):
   2. a compact **file-summary badge** (`relighting: ✓ supported (5/5)` /
      `relighting: ◐ partial (3/5)` / `relighting: ✗ not supported (0/5)`) for
      at-a-glance identification, mirroring the existing `optional:` badge;
-  3. a `relighting` pill on the `normal`/`material` rows of the checklist (next to
-     the existing `optional` pill), marking them as the relighting-required group
-     in place.
+  3. a `relighting` pill on the `normal`/`material` rows of the checklist —
+     SUPERSEDED by M7.1 (the optional rows left the main checklist, so both row
+     pills were retired with them).
   The verdict object is added to the JSON export.
+
+**Checklist scoping revision (M7.1, implemented).** The
+optional families are currently listed twice: once as dashed `optional` rows in the
+main signature checklist and again as groups in the "Relighting required" sub-panel.
+Revision (confirmed direction: *optional properties should not be listed in the main
+checklist — they appear only in the groups they are part of*):
+
+- **Render rule:** the main checklist renders **required families only** (6 rows,
+  59 properties). `renderSignatureCard` filters `.famcheck` rows to `!f.optional`;
+  the dashed `normal`/`material` rows and both row pills (`optional`, `relighting`)
+  — plus their now-dead CSS (`.famrow.optional`, `.famrow .st.opt`, `.optpill`,
+  `.relpill`) — are removed. No sub-panel change is needed: its one-line
+  requirement note already names all five properties (`nx, ny, nz` /
+  `metallicFactor, roughnessFactor`), so dropping the checklist rows loses no
+  information.
+- **Orphaned optional families** (optional, but required by no feature group):
+  rendered in neither the main checklist nor any group panel — *designed-out*,
+  not an error. None exists today; they remain visible in the property-table
+  Group column and in the JSON export, so nothing is silently lost. (Alternative
+  considered: keep orphans in the main checklist; rejected as a special case —
+  re-decide only if one is ever added.)
+- **Unchanged by this revision:** the whole data layer (`SIGNATURES`,
+  `detect3DGS`, `detectRelighting`, `FEATURES`, JSON export), the standard/near
+  badge, the 59 matched/total counts, both summary badges (`optional: …`,
+  `relighting: …`), the property-table Group column with its `optional` tag, and
+  all fixtures.
+- **Tests:** core suite untouched (49 tests — the change is render-layer only).
+  Browser smoke: drop/repurpose the `famOpt` and `relPills` snapshot keys; every
+  candidate scenario now asserts exactly **6 checklist rows** and that no main
+  checklist row mentions `normal`/`material`; sub-panel (`relRows`) and badge
+  assertions unchanged.
+- **Docs touched:** §3 (optional-properties addendum wording + UI-surface item 3,
+  marked superseded), the §4.2 tree, the milestone table; README "What it shows"
+  bullets (checklist rows + pills wording).
 
 ## 4. Architecture
 
@@ -323,9 +358,9 @@ Details:
   └────────────────────────────────────────────────────────────────┘
   ```
 
-  In the signature checklist, the `normal`/`material` rows gain a `relighting` pill
-  beside the existing `optional` pill, marking the two optional families as the
-  relighting-required group in place.
+  (M7.1: the `normal`/`material` optional families no longer have rows in the main
+  signature checklist — required families only — so the sub-panel is their sole
+  checklist-level rendering, and the M7 row pills were retired with it.)
 - **Comments/obj_info:** collapsed list, verbatim, monospace.
 - **Raw header:** verbatim text in a `<pre>`, byte length labeled, copy button.
 - **Errors:** a persistent panel with line numbers for hard errors (rendering of that
@@ -403,7 +438,7 @@ dsh-test/
 | M4 | 3DGS recognition | Signature badge, family grouping + colors, per-family checklist for near-misses | S |
 | M5 | Polish & stretch | First-vertex preview, clipboard-on-row-click, a11y pass, empty/error states, README polish | S–M |
 | M6 | Row-N preview & tail check | `rowJumpInfo`/`tailCheckInfo`/`decodeRowAt`, row-jump form + **Last** button, tail badge in the summary, `rowJump`/`lastRow`/`tail` in JSON export, `tail_midrow` fixture | S |
-| M7 | Relighting capability | `FEATURES` table + pure `detectRelighting` (tested); file-summary relighting badge; "Relighting required" sub-panel in the signature checklist card (candidates only); `relighting` pills on the normal/material checklist rows; verdict in JSON export; `3dgs_relightable` + `ascii_relightable_mesh` fixtures | S–M |
+| M7 | Relighting capability | `FEATURES` table + pure `detectRelighting` (tested); file-summary relighting badge; "Relighting required" sub-panel in the signature checklist card (candidates only); M7.1: main checklist scoped to required families (optional families render only inside the sub-panel); verdict in JSON export; `3dgs_relightable` + `ascii_relightable_mesh` fixtures | S–M |
 
 S ≈ under an hour of implementation; M ≈ a focused session. Total single-file size target
 < 60 KB, no external requests.

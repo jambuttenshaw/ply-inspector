@@ -218,9 +218,10 @@ const DOM_SNAPSHOT = `(() => {
     warnText: t(q("#results .warn")),
     listRows: qsa("#results table.ptable tr").map(t).filter((x) => x.includes("list uchar int")),
     otherSummary: t(q("#results .pl")),
-    famOpt: qsa("#results .famrow.optional").map(t),
+    // M7.1 regression guard: optional families no longer render as checklist
+    // rows and the row pills are gone — both must stay at zero everywhere.
+    relPills: qsa("#results .relpill, #results .optpill, #results .famrow.optional").length,
     relBadges: qsa("#results .badge").map(t).filter((b) => b.startsWith("relighting:")),
-    relPills: qsa("#results .relpill").length,
     relRows: qsa("#results .relrow").map(t),
     // Global regression guard (user-reported bug: bare "null" on the page):
     // no visible text node whose ENTIRE content is exactly "null"/"undefined"
@@ -286,10 +287,8 @@ const scenariosHttp = [
       check("standard: green tail badge (last row intact)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
       check("standard: 59 property rows", d.vertexRows === 59, d.vertexRows);
       check("standard: vertex card title", d.cardTitles.includes("Vertex properties vertex (59)"), d.cardTitles);
-      const req = d.fams.filter((f) => !f.includes("optional"));
-      check("standard: 6 required family rows, all complete", req.length === 6 && req.every((f) => f.startsWith("✓ complete")), d.fams);
-      check("standard: 8 checklist rows (6 required + 2 optional)", d.fams.length === 8, d.fams);
-      check("standard: both optional rows absent (normal + material)", d.famOpt.length === 2 && d.famOpt[0].startsWith("– absent") && d.famOpt[0].includes("normal") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
+      check("standard: 6 checklist rows — required families only, all complete", d.fams.length === 6 && d.fams.every((f) => f.startsWith("✓ complete")), d.fams);
+      check("standard: no optional rows in the main checklist (normal + material live in the relighting sub-panel)", !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
       check("standard: no optional summary badge (0/5 is not notable)", !d.badges.some((b) => b.startsWith("optional:")), d.badges);
       check("standard: red relighting badge (not supported 0/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✗ not supported (0/5)", d.relBadges);
       check("standard: sub-panel lists both groups missing with the full prop list",
@@ -297,7 +296,7 @@ const scenariosHttp = [
         d.relRows[0].includes("✗ missing") && d.relRows[0].includes("normal") && d.relRows[0].includes("0/3") && d.relRows[0].includes("missing: nx, ny, nz") &&
         d.relRows[1].includes("✗ missing") && d.relRows[1].includes("material") && d.relRows[1].includes("0/2") && d.relRows[1].includes("missing: metallicFactor, roughnessFactor"),
         d.relRows);
-      check("standard: relighting pills on the two optional checklist rows", d.relPills === 2, d.relPills);
+      check("standard: no checklist row pills (M7.1: optional rows retired from the checklist)", d.relPills === 0, d.relPills);
       check("standard: row-jump controls present (input at 0)", d.hasRowJump === true && d.rowInput === "0", { hasRowJump: d.hasRowJump, rowInput: d.rowInput });
       check("standard: caption is row 0 of 3", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 3"), d.fvCaption);
       check("standard: first row decoded (59 cells)", d.fvCount === 59, d.fvCount);
@@ -321,8 +320,8 @@ const scenariosHttp = [
       check("near: amber 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges);
       check("near: 25 property rows", d.vertexRows === 25, d.vertexRows);
       check("near: sh_rest partial with missing list", d.fams.some((f) => f.includes("SH rest") && f.includes("partial") && f.includes("missing: f_rest_11")), d.fams);
-      check("near: 8 checklist rows (6 required + 2 optional)", d.fams.length === 8 && d.famOpt.length === 2, d.fams);
-      check("near: both optional rows absent (normal + material)", d.famOpt[0].includes("normal") && d.famOpt[1].includes("material"), d.famOpt);
+      check("near: 6 checklist rows — required families only (M7.1)", d.fams.length === 6, d.fams);
+      check("near: no optional rows in the main checklist", !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
       check("near: green tail badge (both rows present)", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
       check("near: no standard badge", !d.badges.some((b) => b.includes("standard signature")), d.badges);
       check("near: red relighting badge (not supported 0/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✗ not supported (0/5)", d.relBadges);
@@ -335,7 +334,7 @@ const scenariosHttp = [
       check("normals: standard 59/59 badge (required count unchanged)", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
       check("normals: amber optional badge (normal 3/3, material 0/2)", d.badges.some((b) => b === "optional: normal 3/3, material 0/2"), d.badges);
       check("normals: 62 property rows", d.vertexRows === 62, d.vertexRows);
-      check("normals: 8 checklist rows; normal complete, material absent", d.fams.length === 8 && d.famOpt.length === 2 && d.famOpt[0].startsWith("✓ complete") && d.famOpt[0].includes("normal") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
+      check("normals: 6 required-only checklist rows (normal/material not double-listed)", d.fams.length === 6 && !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
       check("normals: first row decoded (62 cells)", d.fvCount === 62, d.fvCount);
       check("normals: row 0 last value = 61 (rot_3)", d.fvLast === "61", d.fvLast);
       check("normals: size matches actual (248 B/row)", d.badges.some((b) => b.startsWith("size: expected") && b.includes("matches actual")), d.badges);
@@ -354,7 +353,12 @@ const scenariosHttp = [
       check("partial normals: standard badge stays", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
       check("partial normals: amber optional badge (normal 1/3, material 0/2)", d.badges.some((b) => b === "optional: normal 1/3, material 0/2"), d.badges);
       check("partial normals: 60 property rows", d.vertexRows === 60, d.vertexRows);
-      check("partial normals: normal row partial with missing list, material absent", d.famOpt.length === 2 && d.famOpt[0].includes("partial") && d.famOpt[0].includes("missing: ny, nz") && d.famOpt[1].startsWith("– absent") && d.famOpt[1].includes("material"), d.famOpt);
+      check("partial normals: 6 required-only checklist rows", d.fams.length === 6 && !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
+      check("partial normals: sub-panel — normal partial with missing list, material missing",
+        d.relRows.length === 2 &&
+        d.relRows[0].includes("◐ partial") && d.relRows[0].includes("missing: ny, nz") &&
+        d.relRows[1].includes("✗ missing") && d.relRows[1].includes("0/2"),
+        d.relRows);
       check("partial normals: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
       check("partial normals: amber relighting badge (partial 1/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ◐ partial (1/5)", d.relBadges);
     },
@@ -371,7 +375,8 @@ const scenariosHttp = [
         d.relRows[0].includes("✓ complete") && d.relRows[0].includes("3/3") &&
         d.relRows[1].includes("✓ complete") && d.relRows[1].includes("2/2"),
         d.relRows);
-      check("relightable: two relighting pills on the optional rows", d.relPills === 2, d.relPills);
+      check("relightable: 6 required-only checklist rows", d.fams.length === 6 && !d.fams.some((f) => f.includes("normal") || f.includes("material")), d.fams);
+      check("relightable: no checklist row pills (M7.1)", d.relPills === 0, d.relPills);
       check("relightable: first row decoded (64 cells)", d.fvCount === 64, d.fvCount);
       check("relightable: green tail badge", d.badges.some((b) => b === "tail: ✓ last row intact"), d.badges);
     },

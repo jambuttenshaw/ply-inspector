@@ -162,9 +162,6 @@
   .famrow .nm { font-weight: 600; font-size: 13px; min-width: 150px; }
   .famrow .ratio { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .famrow .miss { font-family: var(--mono); font-size: 11.5px; color: var(--faint); word-break: break-all; flex-basis: 100%; }
-  .famrow.optional { border-style: dashed; background: rgba(28,35,48,.6); }
-  .famrow .st.opt { color: var(--faint); }
-  .famrow .optpill { font-size: 10px; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; letter-spacing: .3px; }
 
   /* optional signature families in the property table */
   table.ptable td .swatch-optional { background: transparent; border: 1px dashed; }
@@ -172,8 +169,8 @@
   table.ptable tr.opt td { border-bottom: 1px dashed rgba(48,54,61,.55); }
   table.ptable tr.opt td.name { color: var(--muted); }
 
-  /* relighting capability (M7): pill + sub-panel */
-  .famrow .relpill { font-size: 10px; color: var(--amber); border: 1px solid rgba(210,153,34,.45); border-radius: 999px; padding: 0 6px; letter-spacing: .3px; }
+  /* relighting capability (M7): sub-panel (M7.1: optional families live here,
+     not in the main checklist) */
   .relpanel { margin-top: 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel2); padding: 10px 12px; }
   .relhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
   .relhead .reltitle { font-weight: 700; font-size: 13px; }
@@ -1069,25 +1066,17 @@
     function renderSignatureCard(s) {
       const sig = s.signature;
       if (sig.badge === "none") return null;
-      const relightingKeys = new Set(PLY.FEATURES.relighting.requires);
-      const rows = sig.families.map((f) => {
+      // Checklist scoping (M7.1): required families only. Optional families
+      // appear solely inside the feature group(s) that require them — for the
+      // shipped table, the "Relighting required" sub-panel below — so they are
+      // never double-listed in the main checklist.
+      const rows = sig.families.filter((f) => !f.optional).map((f) => {
         const complete = f.missing.length === 0 && f.found.length > 0;
-        let stCls, stTxt;
-        if (f.optional) {
-          // Optional families are styled differently: absence is fine
-          // (gray "absent"), never an error (red "missing").
-          if (complete) { stCls = "ok"; stTxt = "✓ complete"; }
-          else if (f.found.length > 0) { stCls = "part"; stTxt = "◐ partial"; }
-          else { stCls = "opt"; stTxt = "– absent"; }
-        } else {
-          stCls = complete ? "ok" : f.found.length > 0 ? "part" : "no";
-          stTxt = complete ? "✓ complete" : f.found.length > 0 ? "◐ partial" : "✗ missing";
-        }
-        const row = el("div", { class: f.optional ? "famrow optional" : "famrow" },
+        const stCls = complete ? "ok" : f.found.length > 0 ? "part" : "no";
+        const stTxt = complete ? "✓ complete" : f.found.length > 0 ? "◐ partial" : "✗ missing";
+        const row = el("div", { class: "famrow" },
           el("span", { class: `st ${stCls}` }, stTxt),
           el("span", { class: "nm", style: `color:${f.color}` }, f.name),
-          f.optional ? el("span", { class: "optpill" }, "optional") : null,
-          f.optional && relightingKeys.has(f.key) ? el("span", { class: "relpill" }, "relighting") : null,
           el("span", { class: "ratio" }, `${f.found.length}/${f.expected.length}`),
         );
         if (f.missing.length) row.append(el("span", { class: "miss" }, `missing: ${f.missing.join(", ")}`));
