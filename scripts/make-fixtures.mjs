@@ -272,6 +272,58 @@ if (new Set(STD3DGS).size !== 59) throw new Error("duplicate property names in s
 }
 
 // ---------------------------------------------------------------------------
+// two_element.ply — vertex (4 floats) + a property-less second element.
+// Regression fixture: some exporters emit bare elements (e.g. `element edge 3`
+// with no properties). The download card must render ONE box for this file
+// (nothing to select on the bare element), and a keep-all download must keep
+// the element's declaration line in the output. value(row r, prop i) = r*100+i
+// ---------------------------------------------------------------------------
+{
+  const names = ["x", "y", "z", "opacity"];
+  const rows = 2;
+  const header = headerOf([
+    "ply",
+    "format binary_little_endian 1.0",
+    "comment two-element fixture: property-less second element (download regression)",
+    "element vertex 2",
+    ...names.map((n) => `property float ${n}`),
+    "element edge 3",
+    "end_header",
+  ]);
+  const body = Buffer.alloc(rows * names.length * 4);
+  for (let r = 0; r < rows; r++)
+    for (let i = 0; i < names.length; i++) body.writeFloatLE(r * 100 + i, r * names.length * 4 + i * 4);
+  W("two_element.ply", Buffer.concat([Buffer.from(header, "utf8"), body]));
+}
+
+// ---------------------------------------------------------------------------
+// big_zero.ply — vertex (4 floats) + a property-less second element whose
+// claimed count is 1e11 while the file itself stays ~200 bytes.
+// Regression fixture (user-reported freeze): the old per-row walk for
+// zero-property binary elements spun `count` times without ever yielding, so
+// this TINY file froze the page on Download. The streamer must count such
+// rows in one step; a keep-all download keeps the declaration + 32 B body.
+// value(row r, prop i) = r*100+i
+// ---------------------------------------------------------------------------
+{
+  const names = ["x", "y", "z", "opacity"];
+  const rows = 2;
+  const header = headerOf([
+    "ply",
+    "format binary_little_endian 1.0",
+    "comment bare element with a huge claimed count (download freeze regression)",
+    "element vertex 2",
+    ...names.map((n) => `property float ${n}`),
+    "element edge 100000000000",
+    "end_header",
+  ]);
+  const body = Buffer.alloc(rows * names.length * 4);
+  for (let r = 0; r < rows; r++)
+    for (let i = 0; i < names.length; i++) body.writeFloatLE(r * 100 + i, r * names.length * 4 + i * 4);
+  W("big_zero.ply", Buffer.concat([Buffer.from(header, "utf8"), body]));
+}
+
+// ---------------------------------------------------------------------------
 // big_endian.ply — BE binary, double + int + uchar mix (row 0: 3.5, 42, 7)
 // ---------------------------------------------------------------------------
 {

@@ -297,7 +297,32 @@ index.html
    │    → { status: ok | missing | truncated-row, offset, available, need }
    │    • pure arithmetic, no decoding — powers the tail badge
    ├── PLY.decodeRowAt(file, header, rowIndex)  (M6, one max(64 KB, rowBytes) slice)
-   ├── UI: drop zone / file input wiring, render(state), copy-CSV, export-JSON
+   ├── PLY.propertyGroups(element)              (M8, download grouping)
+   │    → [{ kind: indexed|axis|single, label, sublabel, type, members,
+   │    bytesPerRow }] — `f_rest_0…44` → one indexed chip, `nx/ny/nz` → one axis
+   │    chip, everything else single (lists and unnamed props never grouped)
+   ├── PLY.projectRow(src, offset, element, bigEndian, keep)
+   │    → { out, complete } — one rewritten row: kept properties projected in
+   │    order, list items copied verbatim, dropped properties cut
+   ├── PLY.rowBounds(src, offset, element, bigEndian)
+   │    → { bytes, complete } — one row's true length (list count prefix read)
+   ├── PLY.subsetHeader(header, keepSets)
+   │    → { text, byteLength, keptPerElement, expectedBodyBytes, variable }
+   │    • re-emits header with kept elements/properties (raw lines verbatim)
+   │      + a `comment PLY Inspector: kept …` marker line
+   ├── PLY.subsetPlan(header, keepSets, fileSize)
+   │    → { ok, reasons, elements: [{mode: copy|rewrite|drop, offset, rows,
+   │    newRowBytes, rowBytes, hasList, keep}], estimatedOutSize, headerBytes,
+   │    exact, variable } — infeasibility spelled out (no props selected,
+   │    non-integer counts, unknown types in a rewrite)
+   ├── PLY.streamSubset(readChunk, header, plan, { onProgress, isAborted,
+   │    fileSize }) → { chunks, rowsWritten, perElementRows, truncated,
+   │    trailingBytes, aborted, shortLines }
+   │    • 8 MB windowed body walk; copy mode byte-copies rows verbatim,
+   │      rewrite mode re-encodes via projectRow, ASCII mode token-projects
+   │      each line; the only whole-body reader in the app
+   ├── UI: drop zone / file input wiring, render(state), copy-CSV, export-JSON,
+   │        download card (M8: group chips, live estimate, progress + Abort)
    └── export: globalThis.PLYInspector = { parseHeader, TYPES, detect3DGS,
          detectRelighting, FEATURES, … }
         + DOM init guarded by `typeof document !== "undefined"`
@@ -499,6 +524,7 @@ dsh-test/
 | M7 | Relighting capability | `FEATURES` table + pure `detectRelighting` (tested); file-summary relighting badge; "Relighting required" sub-panel in the signature checklist card (candidates only); M7.1: main checklist scoped to required families (optional families render only inside the sub-panel); verdict in JSON export; `3dgs_relightable` + `ascii_relightable_mesh` fixtures | S–M |
 | M7.2 | Summary-pill removal | `optional: …` and `tail: …` pills no longer rendered under any circumstances (data + JSON export untouched); smoke pill assertions flipped to no-pill guards; README/PLAN reworded | S |
 | M7.3 | Property aliases | `aliases` map on signature families (`metallicFactor`/`metallic`, `roughnessFactor`/`roughness`); any spelling satisfies the property; `via` map in relighting groups; sub-panel via-aliases line + note; Group column resolves aliases; `3dgs_relightable_alias` fixture; core 49 → 53, smoke 121 → 133 | S |
+| M8 | Download card (subset PLY export) | "Download" card with per-property-group checkboxes for every element (multidimensional properties — `f_rest_0…44`, `nx/ny/nz` — share one checkbox via the pure `propertyGroups` name-pattern helper), live size estimate, non-blocking two-phase progress + Abort, and a Blob download of a rewritten PLY keeping only the selected properties; pure core `propertyGroups`/`projectRow`/`rowBounds`/`subsetHeader`/`subsetPlan`/`streamSubset`/`coalesceParts` (byte-copy projection, binary + ASCII, truncation-tolerant, cooperative freeze guard); CDP download smoke scenario. See §12 | M–L |
 
 S ≈ under an hour of implementation; M ≈ a focused session. Total single-file size target
 < 60 KB, no external requests.
@@ -534,3 +560,258 @@ S ≈ under an hour of implementation; M ≈ a focused session. Total single-fil
 3. **Signature definitions file:** keep 3DGS families inline (default) or a small JSON table
    in the HTML for easy future variants? (Default: a clearly delimited const table — good
    enough for one signature.)
+
+---
+
+## 12. M8 — Download card (subset PLY export)
+
+**Feature.** A new **Download** card in the results stack. The user selects which
+properties (attributes) to keep, per element, and the tool writes a *new* PLY file —
+same format/endianness, original property order, bit-exact for every kept value — and
+triggers a browser download. Downloading is the one feature that reads the whole body,
+and it does so only on explicit user action, streamed in 8 MB windows with progress and
+an Abort button.
+
+### 12.1 Scope and decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Filtering granularity | One checkbox per **property group**, for **all elements** (not just `vertex`). **Multidimensional properties share a checkbox**: indexed families (`f_rest_0…44`, `scale_0…2`, `rot_0…3`) and axis components (`nx/ny/nz`, bare `x/y/z`) toggle together; everything else is a per-property checkbox | "filter properties out of the PLY" is generic; a face's `vertex_indices` is an attribute too. Grouping is a pure name-pattern rule (`propertyGroups`, §12.3) — signature-independent, so it works on any file. A 64-property relightable 3DGS vertex is **9 chips**, not 64 |
+| Property order | Kept properties keep their **original relative order**; never reordered | Consumers expect `x/y/z` first; reordering is a value-transform, out of scope |
+| Value handling | **Copy, don't decode** — kept bytes are copied verbatim (raw byte ranges) | Bit-exact by construction (no float round-trip questions), ~10× faster than decode/re-encode |
+| Element exclusion | Unchecking **all** properties of an element = element excluded (no `element` line, rows walked & discarded) | Free consequence of the per-property model |
+| Comments / obj_info | Preserved verbatim + one added `comment PLY Inspector: …` line; **no timestamp** (deterministic output) | Metadata stays lossless; byte-identical output for identical input |
+| Output name | `<basename>.subset.ply` (`output.ply` → `output.subset.ply`) | Simple; the browser handles name collisions on repeat downloads |
+| Full-body read | Only on the Download click; chunked (8 MB) with progress + Abort; output materialized once as a `Blob` (≈ output size memory) | Keeps the "body is never read" default intact with an explicit escape hatch |
+| 3DGS presets (e.g. "Standard 59", "No SH rest") | **Stretch** — not in the v1 core | The checkbox grid already does it; presets are a cheap follow-up |
+
+**Out of scope (v1):** value transforms (offset/scale/renormalize), type conversion
+(float32 → float16, quantization), row-range selection ("first N rows"), property
+reordering, multi-file merge, endianness/format conversion (ascii↔binary).
+
+### 12.2 What the box shows (UI spec)
+
+Placement in `render()`: after the Row preview card, before Comments & obj_info —
+end of the data-card group. Shown whenever inspection succeeds, including the
+infeasible cases (then it explains *why* the download is disabled).
+
+```
+┌ Download PLY ──────────────────────────────────────────────────────────────┐
+│ output.ply: 235.4 MB → 94.1 MB · keeping 14/59 props        [Download]    │
+│ ┌ vertex × 1,000,000 ────────────────────────── [All] [None]  236 → 56 B ┐│
+│ │ ☑x,y,z ☑f_dc(3) ☐f_rest(45) ☑opacity ☑scale(3) ☑rot(4)                 ││
+│ └─────────────────────────────────────────────────────────────────────────┘│
+│ ┌ face × 302,271 ────────────────────────────── [All] [None]  list rows ─┐│
+│ │ ☑vertex_indices (list uchar int)                                        ││
+│ └─────────────────────────────────────────────────────────────────────────┘│
+│ streaming:▓▓▓▓▓▓░░░░░░ 34% · 380,000/1,000,000 rows · 42.7 MB · 0.9 s  [Abort]│
+│ assembling:▓▓▓▓▓▓▓▓▓▓▓░ 97% · 91.3/94.1 MB · 1.1 s                           │
+│ after:    wrote 1,000,000 rows in 1.2 s → output.subset.ply (94.1 MB)      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Card head:** title `Download PLY`; right-aligned `.actions` with the live
+  **estimate** text and the **Download** button (**Abort** replaces it while running).
+- **One subsection per element:** display name (duplicate names use `vertex #2`
+  conventions), `× count`, **All** / **None** buttons, `N B/row → M B/row` (or
+  `list rows` when variable), and a wrapped grid of **group chips** — one
+  checkbox per `propertyGroups` group (§12.3):
+  `<label class="prop-chip"><input type="checkbox" checked>
+  <span class="nm">f_rest</span> <span class="ct">45</span>
+  <span class="tp">float</span></label>`. Toggling a group chip selects/deselects
+  **all of its members at once** (e.g. the `nx, ny, nz` chip toggles the whole
+  normal; the `f_rest (45)` chip toggles all 45 SH-rest coefficients).
+  A 64-property relightable 3DGS vertex renders as **9 chips** (x,y,z / f_dc /
+  f_rest / opacity / scale / rot / nx,ny,nz / metallicFactor / roughnessFactor)
+  instead of 64. Unnamed properties render as `#i (unnamed)` singles, selectable
+  like any other.
+- **Estimate line** (card head + per-subsection): recomputed on every checkbox
+  change via one delegated `change` listener on the card. Uses `~` when the size
+  is a lower bound (variable rows) or conservative (truncated body).
+- **Progress line (two phases over one bar):** streaming owns 0–90 %
+  (`streaming N% · rows done/total · MB out · seconds`), assembly owns 90–100 %
+  (`assembling X of Y MB · seconds`) — monotone, never rewinds. Both phases are
+  cooperative: the streamer yields to the event loop every ~24 ms of wall time
+  and the assembler after every 16 MB segment, so the bar keeps painting and
+  **Abort** (a cooperative flag honored in every phase) stays clickable on
+  multi-GB files. `aria-live="polite"`.
+- **Result line + toast** after success: `wrote N rows in t s → name.subset.ply (size)`.
+- **Infeasible:** Download disabled (not removed), red `.note` listing the reasons (§12.4).
+- **Footnote:** "Downloading reads the whole body once — the only feature that does."
+
+### 12.3 Core design (pure functions, Node-testable — §4.2 convention)
+
+New `globalThis.PLYInspector` exports:
+
+1. **`propertyGroups(element)` → `[{ kind, label, sublabel, type, members, bytesPerRow }]`**
+   — pure name-pattern grouping that drives the checkboxes (`kind`:
+   `"single"` | `"indexed"` | `"axis"`; `members` = property indices in
+   declaration order; `bytesPerRow` = sum of member byte widths). Rule (the two
+   patterns are disjoint — a name ends in a digit *or* in one of the characters
+   `x`/`y`/`z`, never both — so there is no precedence collision):
+   - **indexed**: ≥ 2 properties matching `^(.+)_(\d+)$` with the same `base`
+     (e.g. `f_dc_0…2`, `f_rest_0…44`, `scale_0…2`, `rot_0…3`). No contiguity is
+     required — holes are fine and the label carries the actual member count
+     (`f_rest (11)`); all members must share the same normalized type, else the
+     family falls back to individual singles;
+   - **axis**: ≥ 2 properties sharing a prefix whose names end in one of
+     `x`/`y`/`z` (covers `nx/ny/nz`, `normal_x/y/z`, and bare `x/y/z` with an
+     empty prefix);
+   - everything else (scalars like `opacity`, list properties, 1-member
+     candidates, pattern-unrelated triples like `red/green/blue`) is a **single**.
+   Labels: indexed → the base + count pill (`f_rest` `45`, sublabel
+   `f_rest_0 … f_rest_44`); axis → member names joined (`nx, ny, nz`; `x, y, z`);
+   single → the property name. **Grouping is UI sugar over the same model**:
+   `keepSets` stays a per-property boolean array — the UI expands group toggles
+   into property indices, and the projection/plan/stream functions below are
+   unchanged by this refinement.
+2. **`projectRow(src, offset, element, keep, bigEndian)` → `{ out, complete }`** —
+   projects one binary row onto the kept properties. Walks the row property by
+   property: a kept fixed-width property copies its **raw byte range**
+   (`out.set(src.subarray(o, o + p.bytes))`); a kept list property reads its count
+   (one DataView access, endianness-aware) and copies the count bytes + item range
+   verbatim; dropped properties only advance the offset. `out` is preallocated to
+   the exact new row size. `complete: false` when `src` runs out mid-row.
+3. **`rowBounds(src, offset, element, bigEndian)` → `{ bytes, complete }`** — the
+   same walk with no output. Measures variable-length (list) rows so the walker
+   knows where each row ends, and skips dropped-element rows.
+4. **`subsetHeader(header, keepSets)` → `{ text, byteLength, keptPerElement, expectedBodyBytes, variable }`**
+   — rebuilds the header text: `ply` + the original `format` line, original
+   `comment`/`obj_info` lines verbatim, one added
+   `comment PLY Inspector: kept vertex 14/59; face 1/1` line, then per element
+   (in original order, drop-mode elements omitted entirely) the `element` line and
+   the kept `property` lines using the **verbatim `rawLine`** so the original type
+   tokens (`float` vs `float32`) survive. `keepSets` is an array aligned with
+   `header.elements` — **keyed by element index**, so duplicate element names map
+   to distinct occurrences (same convention as `elementDisplay`).
+5. **`subsetPlan(header, keepSets, fileSize)` → `{ ok, reasons[], elements: [{ mode: "copy" | "rewrite" | "drop", offset, rows, newRowBytes }], estimatedOutSize }`**
+   — feasibility plus the numbers behind the live estimate. An element is
+   `copy` when its selection equals the original (its body region streams
+   verbatim — zero decoding), `rewrite` when any property is dropped (all its
+   types must be known, binary), `drop` when nothing is kept.
+6. **`streamSubset(readChunk, header, plan, { onProgress, isAborted, yielder, now, yieldBudgetMs })` → `{ chunks, rowsWritten, perElementRows, truncated, trailingBytes, aborted }`**
+   — the body walker. `readChunk(start, end) → Promise<Uint8Array>` is injected:
+   the browser glue builds it from `file.slice(start, end).arrayBuffer()`, the
+   Node tests build it from a Buffer — so the whole transform is testable in the
+   vm harness with no DOM. Reads in 8 MB windows with a carry buffer for
+   chunk-boundary rows; element regions are walked in header order: copy rows
+   append raw slices, rewrite rows go through `projectRow`, drop rows through
+   `rowBounds`; variable-length rows are always measured first with `rowBounds`.
+   **ASCII bodies** take a text path: windowed reads with a streaming
+   `TextDecoder`, one row per line, whitespace-separated tokens, kept-token
+   projection (list counts are inline tokens — same treatment), blank lines
+   skipped. **Cooperative yielding (freeze guard):** with a `yielder`, every
+   per-row loop hands the event loop back to the browser once
+   `yieldBudgetMs` (default 24) of wall time (`now`) has passed — the page
+   repaints and Abort clicks are handled even mid-window. Without a yielder
+   the behavior is unchanged (the Node tests pass none).
+7. **`coalesceParts(parts, isAscii, { onProgress, yielder, isAborted }) → { parts, aborted }`**
+   — merges the streamer's per-row parts into a few Blob parts: each segment of
+   at most 16 MB (or 65 536 string parts, ASCII) is copied exactly ONCE, so the
+   total work is O(output size) — the pre-fix grow-a-buffer-per-part merge was
+   O(output²/row) and froze the page for minutes on real 3DGS downloads
+   (user-reported bug). Progress is reported per segment (the first event
+   carries the total up front), a cooperative abort discards everything, and a
+   yield after each segment keeps the main thread responsive throughout the
+   assembly (freeze guard, §12.4).
+
+**Browser glue** (UI section, not vm-tested): builds `readChunk` from
+`state.file`, runs `streamSubset` with the abort flag, the progress callback,
+and a `setTimeout 0` yielder on a `performance.now` clock; merges the per-row
+parts with the core `coalesceParts` (byte progress, a yield after every
+segment, abort honored); assembles
+`new Blob([headerText, ...coalesced], { type: "application/octet-stream" })`,
+and downloads via object URL + anchor click — the exact pattern `exportJSON`
+already uses, proven under `file://`. Memory: input is streamed; the output is
+materialized once (≈ output size — documented in README).
+
+### 12.4 Edge cases (exact behavior)
+
+| Case | Behavior |
+|---|---|
+| Selection unchanged on an element | `copy` mode — its body region streams verbatim, header lines untouched (no decoding at all) |
+| Some properties dropped, all types known | `rewrite` mode — rows projected by raw byte-range copy |
+| **Unknown-type property on a binary element whose selection changes** | Infeasible: Download disabled with `cannot re-encode "<element>": unknown type "<token>" on "<prop>"`. The *unchanged* case stays `copy` (no decode needed), so `weird_props.ply` remains downloadable with everything kept |
+| Non-integer / negative element count (binary) | Infeasible: row counts undeterminable (`"count"` reason) |
+| Element with count 0 | `element` line emitted when any property is kept; zero body rows |
+| **Truncated body** (actual < claimed) | Walker stops at EOF: the output contains the complete rows written so far, and the **output element count is set to the rows actually written** (the download doubles as a repair tool); note: `wrote N of M claimed rows — body truncated` |
+| **Body larger than expected** | Exactly `count` rows per element are emitted; trailing bytes are dropped with a note `ignored K trailing bytes` |
+| All properties unchecked on an element | Element excluded: no `element` line; its rows are walked and discarded |
+| Everything unchecked | Infeasible: `no properties selected` |
+| Duplicate element names | `keepSets` keyed by element index; subsections use display names (`vertex`, `vertex #2`) |
+| Unnamed properties | Chips labeled `#i (unnamed)`, selectable |
+| **Multidimensional property** (indexed family, axis components) | One shared checkbox; toggling it selects/deselects every member at once. `keepSets` is still per-property — the core projection/plan/stream are unaffected (grouping is UI sugar, §12.3 item 1) |
+| Indexed family with holes (only `f_rest_0…10` present) | One group labeled with the actual count (`f_rest (11)`); no contiguity required |
+| Indexed family with mixed types (`b_0` float, `b_1` int) | Not grouped — individual chips (a group chip displays one shared type) |
+| Pattern-unrelated triple (e.g. `red/green/blue`) | Three single chips — grouping is name-pattern-based, not semantic |
+| List properties (`face`/`vertex_indices`) | Always a single chip. Kept → count + item bytes copied verbatim; dropped → walked and skipped. Variable-length rows are always measured with `rowBounds`, never assumed fixed |
+| **ASCII bodies** | Token projection, one row per line; blank lines skipped; a line with fewer tokens than declared emits what is present (counted in a note); output count = rows actually present |
+| Big-endian files | Same code path; the list-count read is endianness-aware, the byte copies are endian-agnostic |
+| Abort mid-download | Cooperative, honored in every phase: the flag is checked per row while streaming and per 16 MB segment while assembling; the partial output is discarded; the card returns to idle |
+| **Large output — main-thread freeze guard** | Neither phase blocks the page: the per-row stream loop yields to the event loop every ~24 ms of wall time and the assembly yields after every 16 MB segment, so the bar keeps painting and clicks are handled on multi-GB files. The bar is monotone (streaming 0–90 %, assembly 90–100 %) with explicit phase text (`streaming N% …` / `assembling X of Y MB`), so work is always visibly happening |
+| Re-inspecting another file | The card re-renders with all properties checked (fresh state per file; no persistence) |
+| Hard-error file | No card, same as every other card — the error card replaces the results |
+| `file://` origin | Works — only `File.slice` / `Blob` / object URL / anchor download (same as the existing JSON export) |
+
+### 12.5 Testing
+
+**Core suite** (`test/run-tests.mjs`, 53 → ~69; no new fixtures — existing ones
+plus small synthetic in-test buffers):
+
+1. `subsetHeader` keep-all on `3dgs_standard.ply`: starts `ply\nformat binary_little_endian 1.0\n`; all 59 `property float …` lines **verbatim**; original comment preserved; the added comment line present; `parseHeader` round-trip returns 59 properties and `expectedSize` agrees with `expectedBodyBytes`.
+2. `subsetHeader` dropping the 45 `f_rest_*`: vertex keeps exactly `x,y,z,f_dc_0…2,opacity,scale_0…2,rot_0…3` **in original order**; `expectedBodyBytes` = 3 × 56; `face`… (n/a here — single element) and, on a two-element synthetic header, the unchanged second element survives verbatim.
+3. `subsetPlan` keep-all → every element `copy`, `ok: true`, `estimatedOutSize` = new header + full body.
+4. `subsetPlan` infeasible: (a) `weird_props.ply` with a sibling of the unknown-type property unchecked → reason names the unknown type; (b) synthetic non-integer count → count reason; (c) all-empty `keepSets` → `no properties selected`.
+5. `projectRow` LE on a synthetic 236 B row with a distinct byte pattern per position: keep `{x,y,z,f_dc_0}` → 16 B output, byte-identical to the source ranges; keep only mid-row `f_rest_0…2` → offset math correct.
+6. `projectRow` list property on a synthetic face body (`3 0 1 2` uchar/int): kept → output bit-identical to the input row (13 B); dropped → `rowBounds` = 13 B, empty output.
+7. `projectRow`/`rowBounds` truncation: a 10-byte slice of a 236 B row → `complete: false`.
+8. `streamSubset` (binary, Buffer-backed `readChunk`) on the full `3dgs_standard` body, 45 `f_rest_*` dropped: output body is exactly 168 B, `perElementRows [3]`, each output row equals its source ranges; concatenating `subsetHeader` text + output and re-parsing yields values **bit-equal** to `decodeRow` on the original fixture.
+9. `streamSubset` truncation on `tail_midrow` (1 full row + 2 stray bytes): `rowsWritten 1`, `truncated: true` — combined with `subsetHeader`, the emitted count is 1.
+10. `streamSubset` trailing bytes: body + 5 extra bytes → `trailingBytes 5`, `rowsWritten 3`.
+11. `streamSubset` ASCII on `ascii_mesh.ply` dropping the color props: every output line has the right token count, tokens equal the input tokens, blank lines tolerated.
+12. `streamSubset` abort: `isAborted` flips true after the first chunk → `aborted: true`, no chunks kept.
+13. `propertyGroups` on the `3dgs_standard` vertex → exactly **6** groups in declaration order: axis `{x,y,z}`, indexed `f_dc (3)`, indexed `f_rest (45)`, single `opacity`, indexed `scale (3)`, indexed `rot (4)`; member indices and `bytesPerRow` sums check out (236 B total).
+14. `propertyGroups` on `3dgs_with_normals` → 7 groups including axis `{nx,ny,nz}`; on `3dgs_relightable` → **9** groups (the scalar material factors stay singles).
+15. `propertyGroups` on `3dgs_missing_rest` → the `f_rest` group carries exactly its 11 present members (hole-tolerant); on `ascii_mesh` vertex → 5 groups (axis `{x,y,z}`, axis `{nx,ny,nz}`, `red`, `green`, `blue` singles); its `face` → 1 single list group.
+16. `propertyGroups` synthetic: mixed-type family (`b_0` float / `b_1` int) → all singles; a 1-member family → single; empty-prefix axis (`x`,`y`,`z`) groups; pattern-unrelated `red/green/blue` → singles.
+17. Export-surface test: the new exports join the asserted list.
+18. `coalesceParts` (freeze guard): binary parts reassemble bit-exactly across 16 MB segment boundaries; ASCII parts join exactly; progress events start with `(0, total)`, are monotone, and end exactly at the total; one yield per in-loop segment; an abort raised mid-assembly (or pre-set) discards everything; scale — 200 000 × 232 B parts (≈ 46 MB) coalesce in well under a minute, guarding against a regression to the quadratic O(output²/row) merge behind the user-reported freeze.
+19. `streamSubset` cooperative yields: with an injected `yielder` + deterministic `now` clock, the row loop yields roughly once per `yieldBudgetMs` and the output stays byte-identical; without a yielder the behavior is unchanged.
+
+**Browser smoke** (`test/browser-smoke.mjs`, 133 → ~147):
+
+- New CDP plumbing: `Browser.setDownloadBehavior` (allow, temp dir) + `Browser.downloadWillBegin` / `downloadProgress` (completed) to capture the Blob download and read the resulting file in Node.
+- Scenario (http origin, `3dgs_standard.ply`): card exists with exactly **6** checked vertex group chips (`x, y, z` / `f_dc (3)` / `f_rest (45)` / `opacity` / `scale (3)` / `rot (4)`) and estimate `236 B/row → 236 B/row`; uncheck the single `f_rest` group chip → estimate flips to `56 B/row` and a smaller output size; click **Download**; the landed file must `parseHeader` to exactly the 14 kept properties in original order, have body size = header + 3 × 56, and `decodeRow` values on rows 0 and 2 bit-equal the values decoded from the original fixture.
+- `3dgs_with_normals.ply`: the `nx, ny, nz` group chip unchecks all three components in one click (estimate drops 12 B/row); the other six groups are unaffected.
+- `ascii_mesh.ply`: drop the color singles → ASCII output lines assert as in core test 11.
+- `weird_props.ply`: uncheck a sibling of the unknown-type property → Download disabled, reason text mentions the unknown type; keep-all → Download enabled.
+- `tail_midrow.ply`: download completes with the `wrote 1 of 2` truncation note.
+- Abort: not asserted in smoke (fixtures too small to time it) — added to the manual checklist.
+
+**Manual smoke:** drop a real ~200 MB 3DGS `output.ply`, uncheck the single
+`f_rest` group chip (drops all 45 coefficients at once), time it, check the
+landed size ≈ 1,000,000 × 56 B + header, and open the result in a splat viewer.
+
+### 12.6 Docs touched
+
+- README: "What it shows" bullet for the Download card (per-property-group
+  checkboxes — multidimensional properties like `nx/ny/nz` or `f_rest_0…44`
+  toggle together); "Limitations" bullets (download reads the whole body once;
+  output memory ≈ output size; truncated files are emitted with the count
+  corrected to complete rows).
+- PLAN §4.2 component tree gains the six core entries; §8 milestone row (M8);
+  this section (§12).
+
+### 12.7 Work order
+
+1. **M8.1 core** (test-first, all vm-green before any UI): `propertyGroups`,
+   `projectRow`, `rowBounds`, `subsetHeader`, `subsetPlan`, `streamSubset`
+   (binary + ASCII) + core tests 1–17.
+2. **M8.2 UI:** `renderDownloadCard` + group-chip grid CSS (`.prop-chip`,
+   `.dlgrid`, `.dlprog`), All/None, delegated estimate recompute, progress +
+   Abort, Blob download glue.
+3. **M8.3 smoke:** CDP download plumbing + the four scenarios.
+4. **M8.4 docs.**
+
+`index.html` grows by roughly 15–20 KB (the file is already near the §8 < 60 KB
+target — this milestone may push past it; accepted trade for the feature).

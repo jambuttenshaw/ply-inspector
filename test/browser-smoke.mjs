@@ -27,6 +27,7 @@ import path from "node:path";
 import net from "node:net";
 import os from "node:os";
 import process from "node:process";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -227,6 +228,25 @@ const DOM_SNAPSHOT = `(() => {
     relBadges: qsa("#results .badge").map(t).filter((b) => b.startsWith("relighting:")),
     relRows: qsa("#results .relrow").map(t),
     relNote: t(q("#results .relpanel .note")),
+    // M8: download card (absent on error cards)
+    dl: (() => {
+      const btn = q("#results #dlbtn");
+      if (!btn) return null;
+      return {
+        est: t(q("#results #dlest")),
+        btn: { disabled: btn.disabled },
+        reasons: t(q("#results #dlreasons")),
+        sizes: qsa("#results .dlsz").map(t),
+        chips: qsa("#results .dlgrid .prop-chip").map((c) => ({
+          nm: t(c.querySelector(".nm")),
+          ct: t(c.querySelector(".ct")),
+          tp: t(c.querySelector(".tp")),
+          on: c.classList.contains("on"),
+          checked: c.querySelector("input").checked,
+        })),
+        result: t(q("#results #dlresult")),
+      };
+    })(),
     // Global regression guard (user-reported bug: bare "null" on the page):
     // no visible text node whose ENTIRE content is exactly "null"/"undefined"
     // (that is exactly what Element.append(null) renders). Regions that echo
@@ -270,6 +290,94 @@ const CLICK_LAST_ROW = `(() => {
     tick();
   });
 })()`;
+
+// ---------------- M8: download scenarios ----------------
+// Drives the real download card in-page: unchecks the named group chips,
+// reports the infeasible state, or (when enabled) scrolls the Download button
+// into view and returns its center coordinates. The actual click is a TRUSTED
+// CDP mouse event (Input.dispatchMouseEvent) — a programmatic .click() is not
+// a user gesture, and Chrome refuses gesture-less blob downloads from
+// file:// origins (it lands the "downloads.htm" block page instead).
+function downloadArmExpr(uncheckLabels) {
+  const labels = JSON.stringify(uncheckLabels);
+  return `(async () => {
+    const btn = document.querySelector("#results #dlbtn");
+    if (!btn) return { err: "no download button (no download card?)" };
+    const card = btn.closest(".card");
+    const chipOf = (label) => Array.from(card.querySelectorAll(".prop-chip"))
+      .find((c) => c.querySelector(".nm") && c.querySelector(".nm").textContent.trim() === label);
+    for (const label of ${labels}) {
+      const chip = chipOf(label);
+      if (!chip) return { err: "no chip: " + label };
+      const input = chip.querySelector("input");
+      if (input.checked) input.click();
+    }
+    const snap = {
+      est: (card.querySelector("#dlest") || {}).textContent ? card.querySelector("#dlest").textContent.trim() : null,
+      sizes: Array.from(card.querySelectorAll(".dlsz")).map((n) => n.textContent.trim()),
+      chipCount: card.querySelectorAll(".prop-chip").length,
+    };
+    if (btn.disabled) {
+      const reasons = card.querySelector("#dlreasons");
+      return Object.assign(snap, { disabled: true, reasons: reasons ? reasons.textContent.trim() : null });
+    }
+    btn.scrollIntoView({ block: "center" });
+    const r = btn.getBoundingClientRect();
+    return Object.assign(snap, { disabled: false, coords: { x: r.left + r.width / 2, y: r.top + r.height / 2 } });
+  })()`;
+}
+
+const waitForResultExpr = `(async () => {
+  for (let i = 0; i < 600; i++) {
+    const res = document.querySelector("#results #dlresult");
+    if (res && res.textContent.trim() !== "") return { result: res.textContent.trim() };
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return { err: "no result line within 15 s" };
+})()`;
+
+// Waits until a new file appears in the download dir (Chrome writes
+// <name>.crdownload first, then renames); returns { name, buf } once the size
+// is stable. `before` is the dir listing taken before the download started.
+async function waitForDownload(dlDir, before, timeoutMs = 20000) {
+  const t0 = Date.now();
+  for (;;) {
+    if (Date.now() - t0 > timeoutMs) {
+      throw new Error(`download did not land in ${dlDir}: ${fs.readdirSync(dlDir).join(", ") || "(empty)"}`);
+    }
+    const added = fs.readdirSync(dlDir).filter((f) => !before.includes(f) && !f.includes(".crdownload"));
+    if (added.length > 0) {
+      const p = path.join(dlDir, added.sort()[0]);
+      let last = -1, stable = 0;
+      for (;;) {
+        const sz = fs.statSync(p).size;
+        if (sz === last) { stable++; if (stable >= 2) return { name: added.sort()[0], buf: fs.readFileSync(p) }; }
+        else { stable = 0; last = sz; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+// output.ply -> output.subset.ply (mirrors the UI's subsetName)
+const subsetNameNode = (fileName) => {
+  const b = fileName.replace(/\\/g, "/").split("/").pop();
+  const dot = b.lastIndexOf(".");
+  return `${dot > 0 ? b.slice(0, dot) : b}.subset.ply`;
+};
+
+// The core, loaded the same way run-tests.mjs does — verifies downloaded
+// output with the app's own parser (round-trip through the real header).
+function loadVerifyCore() {
+  const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+  const m = html.match(/<script\b([^>]*)>([\s\S]*?)<\/script>/);
+  const sandbox = { console, TextDecoder, TextEncoder };
+  vm.createContext(sandbox);
+  vm.runInContext(m[2], sandbox, { filename: "index.html<script>" });
+  return sandbox.PLYInspector;
+}
+const VCORE = loadVerifyCore();
 
 // ---------------- assertion bookkeeping ----------------
 let pass = 0, fail = 0;
@@ -317,6 +425,44 @@ const scenariosHttp = [
         check("standard: last row fully decoded (59 cells)", a.fvCount === 59, a.fvCount);
       }
     },
+    download: {
+      uncheck: ["f_rest"],
+      expect: (d, a, dl) => {
+        check("dl standard: card present with 6 vertex chips", d.dl && d.dl.chips.length === 6, d.dl && d.dl.chips);
+        check("dl standard: chips all checked initially", d.dl && d.dl.chips.every((c) => c.checked), d.dl && d.dl.chips);
+        check("dl standard: keep-all estimate is exact (no ~)", d.dl && d.dl.est !== null && !d.dl.est.includes("~"), d.dl && d.dl.est);
+        check("dl standard: after unchecking f_rest, 14/59 kept at 56 B/row",
+          dl && dl.est && dl.est.includes("14/59") && dl.sizes[0] === "236 B/row → 56 B/row",
+          { est: dl && dl.est, sizes: dl && dl.sizes });
+        check("dl standard: download completed with a result line", dl && !dl.disabled && dl.result !== null, dl && dl.result);
+        check("dl standard: result says wrote 3 rows", dl && dl.result && dl.result.includes("wrote 3 rows"), dl && dl.result);
+        if (dl && dl.buf) {
+          const h2 = VCORE.parseHeader(dl.buf);
+          check("dl standard out: 14 properties kept, original order",
+            h2.elements[0].properties.length === 14 &&
+            h2.elements[0].properties[0].name === "x" && h2.elements[0].properties[13].name === "rot_3",
+            h2.elements[0].properties.map((p) => p.name));
+          const headTxt = dl.buf.toString("utf8", 0, 400);
+          check("dl standard out: inspector comment names the kept set", headTxt.includes("PLY Inspector: kept vertex 14/59"), headTxt.slice(0, 200));
+          const exp = VCORE.expectedSize(h2.elements, h2.headerByteLength, h2.format.kind);
+          check("dl standard out: exact size 3 x 56 B", exp.exact === true && exp.fixedBytes === 168, exp);
+          const src = fs.readFileSync(path.join(FIX, "3dgs_standard.ply"));
+          const h1 = VCORE.parseHeader(src);
+          const keptNames = h2.elements[0].properties.map((p) => p.name);
+          for (const r of [0, 2]) {
+            const outRow = dl.buf.subarray(h2.headerByteLength + r * 56, h2.headerByteLength + (r + 1) * 56);
+            let off = 0, ok = true;
+            h1.elements[0].properties.forEach((p, i) => {
+              if (!keptNames.includes(p.name)) return;
+              const orig = src.subarray(h1.headerByteLength + r * 236 + i * 4, h1.headerByteLength + r * 236 + (i + 1) * 4);
+              if (!orig.equals(outRow.subarray(off, off + 4))) ok = false;
+              off += 4;
+            });
+            check(`dl standard out: row ${r} kept ranges bit-exact vs original`, ok && off === 56, null);
+          }
+        }
+      },
+    },
   },
   {
     name: "3dgs_missing_rest.ply",
@@ -349,6 +495,21 @@ const scenariosHttp = [
         d.relRows[0].includes("✓ complete") && d.relRows[0].includes("3/3") &&
         d.relRows[1].includes("✗ missing") && d.relRows[1].includes("0/2") && d.relRows[1].includes("missing: metallicFactor, roughnessFactor"),
         d.relRows);
+    },
+    download: {
+      uncheck: ["nx, ny, nz"],
+      expect: (d, a, dl) => {
+        check("dl normals: 7 chips (the axis chip covers all three components)", d.dl && d.dl.chips.length === 7, d.dl && d.dl.chips);
+        check("dl normals: one chip click unchecks all three (248 -> 236 B/row)",
+          dl && dl.sizes[0] === "248 B/row → 236 B/row" && dl.est && dl.est.includes("59/62"),
+          { est: dl && dl.est, sizes: dl && dl.sizes });
+        check("dl normals: download completed", dl && !dl.disabled && dl.result !== null, dl && dl.result);
+        if (dl && dl.buf) {
+          const h2 = VCORE.parseHeader(dl.buf);
+          check("dl normals out: 59 properties (62 - nx/ny/nz)", h2.elements[0].properties.length === 59, h2.elements[0].properties.length);
+          check("dl normals out: size 3 x 236 B", dl.buf.length === h2.headerByteLength + 3 * 236, dl.buf.length - h2.headerByteLength);
+        }
+      },
     },
   },
   {
@@ -431,6 +592,16 @@ const scenariosHttp = [
       check("weird props: no row-jump controls", d.hasRowJump === false, d.hasRowJump);
       check("weird props: no relighting verdict (not a 3DGS candidate)", d.relBadges.length === 0 && d.relRows.length === 0 && d.relPills === 0, { relBadges: d.relBadges, relRows: d.relRows });
     },
+    download: {
+      uncheck: ["x"],
+      expect: (d, a, dl) => {
+        check("dl weird: keep-all Download enabled (unknown types only matter when the selection changes)",
+          d.dl && d.dl.btn && d.dl.btn.disabled === false, d.dl && d.dl.btn);
+        check("dl weird: unchecking a sibling of the unknown-type prop disables Download", dl && dl.disabled === true, dl);
+        check("dl weird: reason mentions the unknown type", dl && dl.reasons && dl.reasons.includes("unknown type"), dl && dl.reasons);
+        check("dl weird: nothing was downloaded (no result line)", dl && dl.result === undefined, dl && dl.result);
+      },
+    },
   },
   {
     name: "bad_magic.ply",
@@ -468,6 +639,22 @@ const scenariosHttp = [
       check("midrow: caption is row 0 of 2", d.fvCaption !== null && d.fvCaption.startsWith("Row 0 of 2"), d.fvCaption);
       check("midrow: row 0 x = 1", d.fvFirst === "1", d.fvFirst);
     },
+    download: {
+      uncheck: [],
+      expect: (d, a, dl) => {
+        check("dl midrow: Download enabled despite the truncated body", d.dl && d.dl.btn && d.dl.btn.disabled === false, d.dl && d.dl.btn);
+        check("dl midrow: estimate is conservative (~) for a truncated file", d.dl && d.dl.est && d.dl.est.includes("~"), d.dl && d.dl.est);
+        check("dl midrow: completes with the truncation note (wrote 1 of 2)", dl && !dl.disabled && dl.result && dl.result.includes("wrote 1 of 2"), dl && dl.result);
+        if (dl && dl.buf) {
+          const h2 = VCORE.parseHeader(dl.buf);
+          check("dl midrow out: element count patched to 1", h2.elements[0].count === 1, h2.elements[0].count);
+          check("dl midrow out: body is exactly the one complete row (4 B)", dl.buf.length === h2.headerByteLength + 4, dl.buf.length - h2.headerByteLength);
+          const src = fs.readFileSync(path.join(FIX, "tail_midrow.ply"));
+          const h1 = VCORE.parseHeader(src);
+          check("dl midrow out: row bytes identical to the original row 0", dl.buf.subarray(h2.headerByteLength).equals(src.subarray(h1.headerByteLength, h1.headerByteLength + 4)), null);
+        }
+      },
+    },
   },
   {
     name: "ascii_mesh.ply",
@@ -480,6 +667,95 @@ const scenariosHttp = [
       check("ascii: no row preview card", d.fvCaption === null && d.hasRowJump === false, { fvCaption: d.fvCaption, hasRowJump: d.hasRowJump });
       check("ascii: no relighting verdict (render gate: not a candidate)", d.relBadges.length === 0 && d.relPills === 0, d.relBadges);
     },
+    download: {
+      uncheck: ["red", "green", "blue"],
+      expect: (d, a, dl) => {
+        check("dl ascii: 5 vertex chips + 1 face chip (lists are always singles)", d.dl && d.dl.chips.length === 6, d.dl && d.dl.chips);
+        check("dl ascii: face chip shows the list type", d.dl && d.dl.chips.some((c) => c.nm === "vertex_indices" && c.tp && c.tp.includes("list")), d.dl && d.dl.chips);
+        check("dl ascii: download completed (token projection)", dl && !dl.disabled && dl.result !== null, dl && dl.result);
+        if (dl && dl.buf) {
+          const txt = dl.buf.toString("utf8");
+          const lines = txt.split("\n").filter((l) => l.trim() !== "");
+          // header: ply, format, inspector comment, original comment,
+          // element + 6 props, element + 1 list prop, end_header = 14 lines
+          check("dl ascii out: 14 header lines + 6 body lines", lines.length === 20, lines.length);
+          const body = lines.slice(14);
+          check("dl ascii out: vertex lines dropped the color tokens, single-spaced",
+            body[0] === "0 0 0 0 0 1" && body[3] === "0 1 0 0 0 1", body);
+          check("dl ascii out: face list lines intact (count token travels with items)",
+            body[4] === "3 0 1 2" && body[5] === "3 2 3 0", body);
+          const h2 = VCORE.parseHeader(dl.buf);
+          check("dl ascii out: 6 vertex props + list face element",
+            h2.elements[0].properties.length === 6 && h2.elements[1].properties[0].isList === true,
+            h2.elements[0].properties.map((p) => p.name));
+        }
+      },
+    },
+  },
+  {
+    name: "two_element.ply",
+    expect: (d) => {
+      check("two-element: file inspected", d.status.startsWith("Inspected"), d.status);
+      check("two-element: ONE download box — the property-less element renders no empty box (regression)",
+        d.dl && d.dl.chips.length === 2 && d.dl.sizes.length === 1,
+        { chips: d.dl && d.dl.chips, sizes: d.dl && d.dl.sizes });
+      check("two-element: vertex box keeps 4/4 props at 16 B/row",
+        d.dl && d.dl.sizes[0] === "16 B/row → 16 B/row" && d.dl.est && d.dl.est.includes("4/4"),
+        { est: d.dl && d.dl.est, sizes: d.dl && d.dl.sizes });
+      check("two-element: Other elements card reports 0 properties",
+        d.otherSummary !== null && d.otherSummary.includes("0 properties"), d.otherSummary);
+    },
+    download: {
+      uncheck: [],
+      expect: (d, a, dl) => {
+        check("dl two-element: keep-all download completes (5 rows: 2 vertex + 3 zero-byte edge)",
+          dl && !dl.disabled && dl.result && dl.result.includes("wrote 5 rows"), dl && dl.result);
+        if (dl && dl.buf) {
+          const h2 = VCORE.parseHeader(dl.buf);
+          check("dl two-element out: element declaration kept (edge 3, 0 properties)",
+            h2.elements.length === 2 && h2.elements[1].name === "edge" && h2.elements[1].count === 3 &&
+            h2.elements[1].properties.length === 0,
+            h2.elements.map((e) => [e.name, e.count, e.properties.length]));
+          check("dl two-element out: body is exactly the 2 vertex rows (32 B)",
+            dl.buf.length === h2.headerByteLength + 32, dl.buf.length - h2.headerByteLength);
+          const headTxt = dl.buf.toString("utf8", 0, 300);
+          check("dl two-element out: inspector comment lists both elements",
+            headTxt.includes("kept vertex 4/4; edge 0/0"), headTxt.slice(0, 220));
+        }
+      },
+    },
+  },
+  {
+    name: "big_zero.ply",
+    expect: (d) => {
+      check("big-zero: file inspected", d.status.startsWith("Inspected"), d.status);
+      check("big-zero: ONE download box — the huge-count bare element renders no box",
+        d.dl && d.dl.chips.length === 2 && d.dl.sizes.length === 1,
+        { chips: d.dl && d.dl.chips, sizes: d.dl && d.dl.sizes });
+    },
+    download: {
+      uncheck: [],
+      expect: (d, a, dl) => {
+        // Pre-fix, the in-page per-row spin over 1e11 zero-byte rows blocked
+        // the main thread here until the global 120 s guard killed the suite
+        // (user-reported: "the page freezes when I click download"). Post-fix
+        // the result line appears within a fraction of a second.
+        check("dl big-zero: keep-all completes instantly (freeze regression)",
+          dl && !dl.disabled && dl.result !== null && dl.result.includes("wrote 100,000,000,002 rows"), dl && dl.result);
+        if (dl && dl.buf) {
+          const h2 = VCORE.parseHeader(dl.buf);
+          check("dl big-zero out: element declaration kept (edge 1e11, 0 properties)",
+            h2.elements.length === 2 && h2.elements[1].name === "edge" && h2.elements[1].count === 100000000000 &&
+            h2.elements[1].properties.length === 0,
+            h2.elements.map((e) => [e.name, e.count, e.properties.length]));
+          check("dl big-zero out: body is exactly the 2 vertex rows (32 B)",
+            dl.buf.length === h2.headerByteLength + 32, dl.buf.length - h2.headerByteLength);
+          const headTxt = dl.buf.toString("utf8", 0, 400);
+          check("dl big-zero out: inspector comment lists both elements",
+            headTxt.includes("kept vertex 4/4; edge 0/0"), headTxt.slice(0, 300));
+        }
+      },
+    },
   },
   {
     name: "unknown_kw.ply",
@@ -491,7 +767,21 @@ const scenariosHttp = [
 ];
 
 const scenariosFile = [
-  { name: "3dgs_standard.ply", embed: true, expect: (d) => check("file:// standard: 59/59 badge", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges) },
+  {
+    name: "3dgs_standard.ply", embed: true,
+    expect: (d, a, dl) => {
+      check("file:// standard: 59/59 badge", d.badges.some((b) => b === "3DGS — standard signature (59/59)"), d.badges);
+      check("file:// dl: keep-all download lands (anchor + objectURL under file://)", dl && !dl.disabled && dl.result !== null, dl && dl.result);
+      if (dl && dl.buf) {
+        const h2 = VCORE.parseHeader(dl.buf);
+        check("file:// dl out: 59 props, 3 x 236 B body", h2.elements[0].properties.length === 59 && dl.buf.length === h2.headerByteLength + 3 * 236, dl.buf.length);
+        const src = fs.readFileSync(path.join(FIX, "3dgs_standard.ply"));
+        const h1 = VCORE.parseHeader(src);
+        check("file:// dl out: body bit-exact vs original", dl.buf.subarray(h2.headerByteLength).equals(src.subarray(h1.headerByteLength)), null);
+      }
+    },
+    download: { uncheck: [] },
+  },
   { name: "3dgs_missing_rest.ply", embed: true, expect: (d) => check("file:// near: 25/59 badge", d.badges.some((b) => b === "3DGS near-match (25/59)"), d.badges) },
   { name: "3dgs_with_normals.ply", embed: true, expect: (d) => check("file:// with normals: 62 rows + no optional pill (M7.2)", d.vertexRows === 62 && !d.badges.some((b) => b.startsWith("optional:")), { rows: d.vertexRows, badges: d.badges }) },
   { name: "3dgs_relightable.ply", embed: true, expect: (d) => check("file:// relightable: green relighting badge (supported 5/5)", d.relBadges.length === 1 && d.relBadges[0] === "relighting: ✓ supported (5/5)", d.relBadges) },
@@ -505,12 +795,16 @@ async function main() {
   const port = await freePort();
   const { srv, port: staticPort } = await startStaticServer(ROOT);
   const chrome = await launchChrome(port);
+  const dlDir = fs.mkdtempSync(path.join(os.tmpdir(), "ply-smoke-dl-")); // M8 downloads land here
   let cdp = null;
   try {
     const page = await getPageTarget(port);
     cdp = await connectCdp(page.webSocketDebuggerUrl);
     await cdp.send("Page.enable");
     await cdp.send("Runtime.enable");
+    await cdp.send("Browser.setDownloadBehavior", {
+      behavior: "allow", downloadPath: dlDir, eventsEnabled: true,
+    });
 
     const evalJs = async (expression) => {
       const r = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
@@ -536,6 +830,31 @@ async function main() {
       return { status, ...dom };
     };
 
+    // M8: drives the in-page download card (uncheck chips -> real click on
+    // Download), waits for the file to land in dlDir, and returns the driver
+    // snapshot plus the landed bytes. A disabled button (infeasible
+    // selection) resolves with { disabled: true, reasons } and no file.
+    const runDownload = async (spec, fileName) => {
+      // Fresh dir per download: this Chrome does NOT dedupe an existing
+      // download name — a collision blocks the download and lands the
+      // "downloads.htm" placeholder instead.
+      const dir = fs.mkdtempSync(path.join(dlDir, "dl-"));
+      await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true });
+      const before = fs.readdirSync(dir);
+      const r = await evalJs(downloadArmExpr(spec.uncheck || []));
+      if (!r) throw new Error("download driver returned nothing");
+      if (r.err) throw new Error(`download driver failed: ${r.err}`);
+      if (r.disabled)
+        return { disabled: true, reasons: r.reasons, est: r.est, sizes: r.sizes, chipCount: r.chipCount, result: undefined };
+      // Trusted click (a user gesture — required for blob downloads).
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: r.coords.x, y: r.coords.y, button: "left", clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: r.coords.x, y: r.coords.y, button: "left", clickCount: 1 });
+      const w = await evalJs(waitForResultExpr);
+      if (w.err) throw new Error(`download driver failed: ${w.err}`);
+      const landed = await waitForDownload(dir, before);
+      return { disabled: false, result: w.result, est: r.est, sizes: r.sizes, chipCount: r.chipCount, name: landed.name, buf: landed.buf };
+    };
+
     // ---- origin 1: http (full fixture set) ----
     console.log(`\n[http origin] ${CHROME}`);
     await navigate(`http://127.0.0.1:${staticPort}/index.html`);
@@ -546,7 +865,12 @@ async function main() {
       const d = await dropFixture(s.name, null);
       let a = null;
       if (s.act) a = await s.act(evalJs); // optional post-drop action (row jump)
-      s.expect(d, a);
+      let dl = null;
+      if (s.download) {
+        dl = await runDownload(s.download, s.name);
+        if (s.download.expect) s.download.expect(d, a, dl);
+      }
+      s.expect(d, a, dl);
       // Global regression guard: the user-reported "bare null on the page" bug.
       check(`${s.name}: no null/undefined text rendered`, d.nullText.length === 0, d.nullText);
       if (a && typeof a === "object")
@@ -563,7 +887,12 @@ async function main() {
       console.log(`\ndrop ${s.name} (embedded bytes)`);
       const b64 = fs.readFileSync(path.join(FIX, s.name)).toString("base64");
       const d = await dropFixture(s.name, b64);
-      s.expect(d);
+      let dl = null;
+      if (s.download) {
+        dl = await runDownload(s.download, s.name);
+        if (s.download.expect) s.download.expect(d, null, dl);
+      }
+      s.expect(d, null, dl);
       check(`${s.name}: no null/undefined text rendered`, d.nullText.length === 0, d.nullText);
     }
   } finally {
@@ -572,6 +901,7 @@ async function main() {
     if (chrome.proc.exitCode === null) chrome.proc.kill();
     srv.close();
     try { fs.rmSync(chrome.profile, { recursive: true, force: true }); } catch { /* Windows: still locked by Chrome */ }
+    try { fs.rmSync(dlDir, { recursive: true, force: true }); } catch { /* same */ }
   }
   hardExit(fail === 0 ? 0 : 1);
 

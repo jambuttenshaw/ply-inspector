@@ -13,11 +13,12 @@ one `index.html` is the whole deliverable. See [PLAN.md](PLAN.md) for the design
    Tip: copy the file to a memorable name first, e.g. `ply-inspector.html`.
 2. Drag a `.ply` file anywhere on the page (or use **browse…**).
 
-Nothing is uploaded and the file body is never read in full — the tool reads at most
-a 64 KB window (growing up to 16 MB for very long headers) to find `end_header`,
-plus up to two 64 KB slices of the body: the first row (always) and the last row
-(when the rows are fixed-size, for the tail check). Any other row is read only
-on demand, from a single bounded slice.
+Nothing is uploaded. Inspection reads at most a 64 KB window (growing up to 16 MB
+for very long headers) to find `end_header`, plus up to two 64 KB slices of the
+body: the first row (always) and the last row (when the rows are fixed-size, for
+the tail check). Any other row is read only on demand, from a single bounded
+slice. The one operation that reads the whole body is **Download PLY**, which
+streams it in 8 MB windows (peak memory ≈ the output size).
 
 ## What it shows
 
@@ -68,6 +69,26 @@ on demand, from a single bounded slice.
   bounded slice, and **Last** jumps to the final row (served from the slice the
   tail check already read — no re-read). For variable-length or unknown-type
   rows the box is replaced by a note explaining why only row 0 is previewed.
+- **Download PLY** — save a filtered copy of the file. Each element gets a row of
+  **property-group chips**: axis triples (`x, y, z`, `nx, ny, nz`), indexed families
+  (`f_rest` = all 45 `f_rest_0…44` coefficients under one chip), and single
+  properties; `list` properties are always single chips. Elements with no
+  properties (some exporters emit bare elements such as `element face 0`) get no
+  box — nothing to select — but a keep-all copy retains their declaration line, and
+   the streamer counts their rows in one step, so a bare element claiming a huge
+   row count can never spin a download.
+  Toggling chips recomputes
+  feasibility, per-element `B/row` sizes, and the output-size estimate in place.
+  **Download** streams the body once, byte-copies untouched rows bit-exactly,
+  re-encodes only the touched rows, and saves `<name>.subset.ply` with a
+  `comment PLY Inspector: kept …` marker line. Truncated input → element counts
+  corrected to the rows actually written, with a result-line note (truncated body,
+  trailing bytes, short ASCII lines). **Abort** cancels mid-stream. The whole
+  pipeline is non-blocking: the streamer yields to the page every ~24 ms and the
+  part-assembler after every 16 MB, so the progress bar keeps moving and **Abort**
+  stays clickable even on multi-GB files. The bar covers streaming (0–90 %:
+  `streaming N% · rows done/total · MB out · seconds`) and then assembly
+  (90–100 %: `assembling X of Y MB`), so work is always visibly happening.
 - **Comments & obj_info** and the **raw header** verbatim (one click, copyable).
 - **Warnings** — unknown keywords, properties before any element, unknown types,
   negative counts, and friends never block rendering; they are listed with line
@@ -79,7 +100,7 @@ on demand, from a single bounded slice.
 ```
 index.html               the app (deliverable)
 PLAN.md                  implementation plan
-scripts/make-fixtures.mjs  regenerates test/fixtures/ (19 fixtures)
+scripts/make-fixtures.mjs  regenerates test/fixtures/ (21 fixtures)
 test/run-tests.mjs       core test suite — runs the inline <script> in a Node vm
 test/browser-smoke.mjs   optional UI smoke test — headless Chrome/Edge over CDP
 test/fixtures/           generated PLY fixtures (do not edit by hand)
@@ -89,8 +110,8 @@ test/fixtures/           generated PLY fixtures (do not edit by hand)
 
 ```
 node scripts/make-fixtures.mjs   # regenerate fixtures (already checked in)
-node test/run-tests.mjs          # 53 core tests, no browser needed
-node test/browser-smoke.mjs      # 133 UI assertions, needs Chrome or Edge
+node test/run-tests.mjs          # 76 core tests, no browser needed
+node test/browser-smoke.mjs      # 185 UI assertions, needs Chrome or Edge
 ```
 
 The core suite executes the literal inline script of `index.html` in a Node `vm`
@@ -104,7 +125,13 @@ skip it where no browser is installed (override the binary via `CHROME_PATH`).
 
 - **Header-only inspection.** The binary body is read only for row previews
   (row 0, the last row when jumpable, and on-demand row N); the rest is never
-  touched.
+  touched. The exception is **Download PLY**, which streams the whole body once
+  in 8 MB windows (peak memory ≈ the output size, not the file size) so a multi-GB
+  file can be subsetted without loading it whole.
+- **Download re-encodes only what changes.** Untouched rows are byte-copied
+  bit-exactly; only rows of elements that lose properties are re-encoded.
+  Truncated files are emitted with element counts corrected to the rows actually
+  written (plus a result-line note) — the output is a valid, self-consistent PLY.
 - **Row-N preview needs fixed-size binary rows.** Any row of the first element
   can be decoded on demand only when its size is exactly known: no `list`
   properties (variable-length rows), no unknown types, and a finite positive

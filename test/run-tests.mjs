@@ -45,16 +45,12 @@ function loadInspector() {
 let passed = 0;
 let failed = 0;
 const failures = [];
+const queued = [];
+// Test bodies may be async (the M8 stream tests await chunk reads); the queue
+// is drained with top-level await right before the summary below, in
+// registration order — output order is unchanged.
 function test(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log(`  ok   ${name}`);
-  } catch (err) {
-    failed++;
-    failures.push({ name, err });
-    console.error(`  FAIL ${name}\n       ${err.message}`);
-  }
+  queued.push({ name, fn });
 }
 function assert(cond, msg) {
   if (!cond) throw new Error(msg ?? "assertion failed");
@@ -98,7 +94,8 @@ const P = loadInspector();
 // ---------------------------------------------------------------------------
 test("exports: PLYInspector surface is complete", () => {
   assertEq(P.version, undefined, "no version pin in v1 core (kept dynamic)");
-  for (const k of ["TYPES", "SIGNATURES", "FEATURES", "parseHeader", "expectedSize", "sizeCheck", "detect3DGS", "detectRelighting", "decodeRow", "rowJumpInfo", "tailCheckInfo", "decodeRowAt"])
+  for (const k of ["TYPES", "SIGNATURES", "FEATURES", "parseHeader", "expectedSize", "sizeCheck", "detect3DGS", "detectRelighting", "decodeRow", "rowJumpInfo", "tailCheckInfo", "decodeRowAt",
+    "propertyGroups", "projectRow", "rowBounds", "subsetHeader", "subsetPlan", "streamSubset", "coalesceParts"])
     assert(P[k], `missing export: ${k}`);
   assertDeepEq(P.FEATURES.relighting.requires, ["normal", "material"], "M7 capability table");
   assertEq(Object.keys(P.TYPES).length, 16, "16 type tokens");
@@ -873,8 +870,605 @@ test("CRLF-only file (no trailing newline after end_header)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// summary
+// M8: subset download core (PLAN §12)
 // ---------------------------------------------------------------------------
+// streamSubset glue: the browser uses file.slice(); tests feed Buffer views.
+const readChunks = (buf) => async (start, end) => buf.subarray(start, Math.min(end, buf.length));
+const allKeep = (h) => h.elements.map((el) => el.properties.map(() => true));
+function coalesce(chunks) {
+  if (chunks.length === 0) return "";
+  if (typeof chunks[0] === "string") return chunks.join(""); // ASCII
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out;
+}
+
+test("M8 groups: 3dgs_standard vertex -> 6 chips in declaration order, 236 B/row", () => {
+  const h = P.parseHeader(fx("3dgs_standard.ply"));
+  const g = P.propertyGroups(h.elements[0]);
+  assertEq(g.length, 6, "chip count");
+  assertDeepEq(g.map((x) => x.label), ["x, y, z", "f_dc", "f_rest", "opacity", "scale", "rot"], "labels");
+  assertDeepEq(g.map((x) => x.kind), ["axis", "indexed", "indexed", "single", "indexed", "indexed"], "kinds");
+  assertEq(g[2].members.length, 45, "f_rest has 45 members");
+  assertEq(g[2].sublabel, "f_rest_0 … f_rest_44", "sublabel spans actual members");
+  assertEq(g[4].members.length, 3, "scale has 3 members");
+  assertEq(g[5].members.length, 4, "rot has 4 members");
+  assertEq(g.reduce((s, x) => s + x.bytesPerRow, 0), 236, "group bytes sum to the row size");
+  assertDeepEq(g.flatMap((x) => x.members).sort((a, b) => a - b),
+    Array.from({ length: 59 }, (_, i) => i), "members are a disjoint cover of all 59 properties");
+});
+
+test("M8 groups: with_normals 7 chips, relightable 9, missing_rest f_rest has 11", () => {
+  const n = P.propertyGroups(P.parseHeader(fx("3dgs_with_normals.ply")).elements[0]);
+  assertEq(n.length, 7, "with_normals chip count");
+  const ax = n.find((x) => x.kind === "axis" && x.label === "nx, ny, nz");
+  assert(ax, "n axis group present");
+  assertEq(ax.bytesPerRow, 12, "normal = 3 floats");
+  assertEq(n.reduce((s, x) => s + x.bytesPerRow, 0), 248, "row bytes");
+  const r = P.propertyGroups(P.parseHeader(fx("3dgs_relightable.ply")).elements[0]);
+  assertEq(r.length, 9, "relightable chip count");
+  assertDeepEq(r.map((x) => x.label).slice(-2), ["metallicFactor", "roughnessFactor"], "material singles at the end");
+  const m = P.propertyGroups(P.parseHeader(fx("3dgs_missing_rest.ply")).elements[0]);
+  const fr = m.find((x) => x.label === "f_rest");
+  assert(fr, "f_rest group present");
+  assertEq(fr.members.length, 11, "hole-tolerant member count");
+  assertEq(fr.sublabel, "f_rest_0 … f_rest_10", "sublabel reflects actual span");
+  assertEq(m.reduce((s, x) => s + x.bytesPerRow, 0), 100, "25 floats");
+});
+
+test("M8 groups: ascii_mesh vertex -> 5 chips; face -> 1 list single (1 B fixed part)", () => {
+  const h = P.parseHeader(fx("ascii_mesh.ply"));
+  const v = P.propertyGroups(h.elements[0]);
+  assertEq(v.length, 5, "vertex chip count");
+  assertDeepEq(v.map((x) => x.label), ["x, y, z", "nx, ny, nz", "red", "green", "blue"], "labels");
+  assertDeepEq(v.map((x) => x.kind), ["axis", "axis", "single", "single", "single"], "kinds");
+  const f = P.propertyGroups(h.elements[1]);
+  assertEq(f.length, 1, "face chip count");
+  assertEq(f[0].kind, "single", "list props are always singles");
+  assertEq(f[0].type, "list uint8 int32", "list type shown");
+  assertEq(f[0].bytesPerRow, 1, "fixed part = count byte");
+});
+
+test("M8 groups: synthetic edge cases — mixed type, 1-member, lists, unnamed", () => {
+  const mk = (name, t) => ({ name, isList: false, type: t, normalized: t.normalized, bytes: t.bytes, rawLine: "" });
+  const mkList = (name) => ({ name, isList: true, type: null, normalized: "list uint8 int32", countType: P.TYPES.uchar, itemType: P.TYPES.int, fixedBytes: 1, bytes: 0, rawLine: "" });
+  const el = { name: "vertex", count: 1, properties: [
+    mk("f_a_0", P.TYPES.float), mk("f_a_1", P.TYPES.uchar), // mixed-type indexed family -> two singles
+    mk("solo_0", P.TYPES.float),                            // 1-member indexed candidate -> single
+    mk("ax", P.TYPES.float),                                // 1-member axis candidate -> single
+    mk("px", P.TYPES.int), mk("py", P.TYPES.int),           // 2-member axis -> group
+    mkList("idx_0"), mkList("idx_1"),                       // pattern-matching LISTS never grouped
+    { name: null, isList: false, type: P.TYPES.float, normalized: "float32", bytes: 4, rawLine: "" },
+  ]};
+  const g = P.propertyGroups(el);
+  assertDeepEq(g.map((x) => x.label),
+    ["f_a_0", "f_a_1", "solo_0", "ax", "px, py", "idx_0", "idx_1", "#8 (unnamed)"], "labels");
+  assertEq(g[4].kind, "axis", "px/py grouped");
+  assertEq(g[0].kind, "single", "mixed family fell back to singles");
+  assertEq(g[5].kind, "single", "lists never grouped");
+});
+
+test("M8 projectRow: kept raw ranges are bit-exact, including mid-row picks and offsets", () => {
+  const h = P.parseHeader(fx("3dgs_standard.ply"));
+  const el = h.elements[0];
+  const row = new Uint8Array(236);
+  for (let p = 0; p < 236; p++) row[p] = (p * 7) % 256; // distinct value per byte position
+  const keep = new Array(59).fill(false);
+  keep[0] = keep[1] = keep[2] = keep[3] = true; // x, y, z, f_dc_0
+  const r = P.projectRow(row, 0, el, keep, false);
+  assert(r.complete, "complete");
+  assertEq(r.out.length, 16, "4 floats = 16 B");
+  for (let i = 0; i < 16; i++) assertEq(r.out[i], (i * 7) % 256, `byte ${i}`);
+  // mid-row selection: f_rest_0..2 = slots 6..8 = row bytes 24..35
+  const keep2 = new Array(59).fill(false);
+  keep2[6] = keep2[7] = keep2[8] = true;
+  const r2 = P.projectRow(row, 0, el, keep2, false);
+  assert(r2.complete);
+  assertEq(r2.out.length, 12, "3 floats = 12 B");
+  for (let i = 0; i < 12; i++) assertEq(r2.out[i], ((24 + i) * 7) % 256, `mid-row byte ${i}`);
+  // same row embedded with a 5-byte prefix (offset must be honored)
+  const withOff = new Uint8Array(241);
+  for (let p = 0; p < 241; p++) withOff[p] = (p * 7) % 256;
+  const r3 = P.projectRow(withOff, 5, el, keep2, false);
+  assert(r3.complete);
+  for (let i = 0; i < 12; i++) assertEq(r3.out[i], ((29 + i) * 7) % 256, `offset row byte ${i}`);
+  // cut-off row
+  const r4 = P.projectRow(new Uint8Array(200), 0, el, keep, false);
+  assertEq(r4.complete, false, "incomplete row flagged");
+  assertEq(r4.out, null);
+});
+
+test("M8 projectRow: list row — kept list copies count + items verbatim", () => {
+  const el = { name: "face", count: 1, properties: [
+    { name: "vertex_indices", isList: true, type: null, normalized: "list uint8 int32", countType: P.TYPES.uchar, itemType: P.TYPES.int, fixedBytes: 1, bytes: 0, rawLine: "" },
+  ]};
+  const row = new Uint8Array([3, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 99, 98, 97]); // 13 B row + junk
+  const r = P.projectRow(row, 0, el, [true], false);
+  assert(r.complete, "complete");
+  assertEq(r.out.length, 13, "count byte + 3 int32");
+  assertDeepEq(Array.from(r.out), [3, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0], "verbatim bytes");
+  const rDrop = P.projectRow(row, 0, el, [false], false);
+  assert(rDrop.complete);
+  assertEq(rDrop.out.length, 0, "dropped list emits nothing");
+  // cut-off list (count says 3, only 2 item ints present)
+  const rCut = P.projectRow(new Uint8Array([3, 0, 0, 0, 0, 1, 0, 0, 0]), 0, el, [true], false);
+  assertEq(rCut.complete, false, "incomplete list row flagged");
+});
+
+test("M8 rowBounds: fixed row, offset list row, cut-off rows", () => {
+  const h = P.parseHeader(fx("3dgs_standard.ply"));
+  const el = h.elements[0];
+  assertDeepEq(P.rowBounds(new Uint8Array(236), 0, el, false), { bytes: 236, complete: true }, "full row");
+  assertDeepEq(P.rowBounds(new Uint8Array(235), 0, el, false), { bytes: -1, complete: false }, "one byte short");
+  const elF = { name: "face", count: 1, properties: [
+    { name: "vertex_indices", isList: true, type: null, normalized: "list uint8 int32", countType: P.TYPES.uchar, itemType: P.TYPES.int, fixedBytes: 1, bytes: 0, rawLine: "" },
+  ]};
+  // 2 junk bytes, then count=2 + 2 int32 (9 B), then 1 junk byte
+  const buf = new Uint8Array([7, 7, 2, 0, 0, 0, 0, 5, 0, 0, 0, 9]);
+  assertDeepEq(P.rowBounds(buf, 2, elF, false), { bytes: 9, complete: true }, "list row with offset");
+  assertDeepEq(P.rowBounds(new Uint8Array([2, 0, 0, 0, 0]), 0, elF, false),
+    { bytes: -1, complete: false }, "list row cut off mid-item (count=2 needs 9 B)");
+});
+
+test("M8 subsetHeader: keep-all adds exactly one inspector comment line; round-trips", () => {
+  const src = fx("3dgs_standard.ply");
+  const h = P.parseHeader(src);
+  const sh = P.subsetHeader(h, allKeep(h));
+  const line = "comment PLY Inspector: kept vertex 59/59\n";
+  assertEq(sh.byteLength, h.headerByteLength + line.length, "original header + one comment line");
+  assert(sh.text.startsWith("ply\nformat binary_little_endian 1.0\n"), "magic + format");
+  assert(sh.text.includes("comment PLY Inspector: kept vertex 59/59"), "inspector comment");
+  assertEq(sh.text.includes("\r"), false, "LF endings only");
+  assert(sh.text.endsWith("\n"), "trailing newline");
+  assertEq(sh.keptPerElement[0], 59, "kept count");
+  assertEq(sh.expectedBodyBytes, 3 * 236, "body bytes");
+  assertEq(sh.variable, false, "fixed rows");
+  const h2 = P.parseHeader(Buffer.from(sh.text, "utf8"));
+  assertEq(h2.warnings.length, 0, "no new warnings");
+  assertEq(h2.elements[0].properties.length, 59, "all property lines verbatim");
+  const exp = P.expectedSize(h2.elements, h2.headerByteLength, h2.format.kind);
+  assertEq(exp.fixedBytes, sh.expectedBodyBytes, "expectedSize matches expectedBodyBytes");
+});
+
+test("M8 subsetHeader: 2-element header — kept element verbatim, dropped element omitted", () => {
+  const h = P.parseHeader(fx("ascii_mesh.ply"));
+  const keepVOnly = [h.elements[0].properties.map(() => true), h.elements[1].properties.map(() => false)];
+  const sh = P.subsetHeader(h, keepVOnly);
+  assert(sh.text.includes("element vertex 4"), "vertex kept");
+  assert(sh.text.includes("comment tiny ASCII quad mesh"), "original comment preserved");
+  assert(sh.text.includes("kept vertex 9/9"), "comment lists only kept elements");
+  assert(!sh.text.includes("element face"), "face omitted entirely");
+  assert(!sh.text.includes("vertex_indices"), "no face property lines");
+  assertEq(sh.variable, false);
+  const keepFOnly = [h.elements[0].properties.map(() => false), h.elements[1].properties.map(() => true)];
+  const sh2 = P.subsetHeader(h, keepFOnly);
+  assert(sh2.text.includes("element face 2"), "face kept");
+  assert(sh2.text.includes("property list uchar int vertex_indices"), "face property verbatim");
+  assert(!sh2.text.includes("element vertex"), "vertex omitted");
+  assertEq(sh2.variable, true, "list element -> variable");
+  assertEq(sh2.expectedBodyBytes, 0, "no fixed contribution from a list element");
+});
+
+test("M8 subsetHeader: zero-property element kept as declaration (no silent drop)", () => {
+  const h = P.parseHeader(Buffer.from(
+    "ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nelement edge 3\nend_header\n", "utf8"));
+  assertEq(h.elements.length, 2, "two elements parsed");
+  assertEq(h.elements[1].properties.length, 0, "second element has no properties");
+  const sh = P.subsetHeader(h, allKeep(h));
+  assert(sh.text.includes("element edge 3"), "declaration line kept");
+  assert(!/element edge 3\nproperty/.test(sh.text), "no property lines for it");
+  assert(sh.text.includes("kept vertex 2/2; edge 0/0"), "inspector comment lists 0/0 for it");
+  assertEq(sh.keptPerElement[1], 0, "nothing kept there");
+  const h2 = P.parseHeader(Buffer.from(sh.text, "utf8"));
+  assertEq(h2.elements.length, 2, "round-trips with both elements");
+  assertEq(h2.elements[1].count, 3, "count preserved");
+});
+
+test("M8 subsetPlan: copy/rewrite/drop modes, offsets, estimate, infeasibility", () => {
+  // keep-all binary: copy mode, offsets known, exact estimate
+  const src = fx("3dgs_standard.ply");
+  const h = P.parseHeader(src);
+  const p0 = P.subsetPlan(h, allKeep(h), src.length);
+  assert(p0.ok, "keep-all feasible");
+  assertEq(p0.elements[0].mode, "copy", "all kept -> copy");
+  assertEq(p0.elements[0].offset, h.headerByteLength, "region offset");
+  assertEq(p0.elements[0].rowBytes, 236);
+  assertEq(p0.estimatedOutSize, p0.headerBytes + 3 * 236, "header + full body");
+  assert(p0.exact, "fixed rows -> exact");
+  // rewrite: keep x,y,z + f_dc (6 props) -> 24 B/row
+  const keepB = h.elements[0].properties.map((p) => ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2"].includes(p.name));
+  const pB = P.subsetPlan(h, [keepB], src.length);
+  assert(pB.ok, pB.reasons.join("|"));
+  assertEq(pB.elements[0].mode, "rewrite");
+  assertEq(pB.elements[0].newRowBytes, 24, "kept fixed contribution");
+  assertEq(pB.estimatedOutSize, pB.headerBytes + 3 * 24, "estimate uses newRowBytes");
+  // drop: 2-element synthetic header, drop the second element
+  const hdr2 = Buffer.from("ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nelement face 3\nproperty float a\nend_header\n");
+  const h2 = P.parseHeader(hdr2);
+  const pD = P.subsetPlan(h2, [h2.elements[0].properties.map(() => true), h2.elements[1].properties.map(() => false)], 0);
+  assert(pD.ok, pD.reasons.join("|"));
+  assertDeepEq(pD.elements.map((e) => e.mode), ["copy", "drop"], "per-element modes");
+  assertEq(pD.elements[1].offset, h2.headerByteLength + 2 * 8, "drop region still offsets the (absent) next");
+  assertEq(pD.estimatedOutSize, pD.headerBytes + 2 * 8, "dropped element contributes nothing");
+  // all-unchecked -> infeasible with the selection reason
+  const pU = P.subsetPlan(h, [new Array(59).fill(false)], src.length);
+  assertEq(pU.ok, false, "all-unchecked infeasible");
+  assert(pU.reasons.some((r) => r.includes("no properties selected")), pU.reasons.join("|"));
+  // unknown types: keep-all is copy-feasible; ANY changed selection is not
+  const hw = P.parseHeader(fx("weird_props.ply"));
+  const allW = allKeep(hw);
+  assert(P.subsetPlan(hw, allW, fx("weird_props.ply").length).ok, "keep-all with unknown types is copy-feasible");
+  const keepW = allW.map((k) => k.map((b, i) => !(hw.elements[0].properties[i].name === "x")));
+  const pW = P.subsetPlan(hw, keepW, fx("weird_props.ply").length);
+  assertEq(pW.ok, false, "changed selection with unknown types infeasible");
+  assert(pW.reasons.some((r) => r.includes("unknown type") && r.includes("vertex")), pW.reasons.join("|"));
+  // ASCII: always feasible, offsets unknown, estimate conservative
+  const ha = P.parseHeader(fx("ascii_mesh.ply"));
+  const pa = P.subsetPlan(ha, allKeep(ha), fx("ascii_mesh.ply").length);
+  assert(pa.ok, "ascii always feasible");
+  assertEq(pa.elements[0].offset, null, "ascii offsets unknown");
+  assertEq(pa.elements[1].mode, "copy", "ascii all-kept");
+  assertEq(pa.exact, false, "ascii estimate is a lower bound");
+});
+
+test("M8 subsetPlan: negative / non-integer element count -> 'count' reason", () => {
+  // parseHeader keeps a negative count as-is (it warns but does not coerce).
+  const hNeg = P.parseHeader(Buffer.from(
+    "ply\nformat binary_little_endian 1.0\nelement vertex -3\nproperty float x\nend_header\n"));
+  assertEq(hNeg.elements[0].count, -3, "negative count survives parsing");
+  const pNeg = P.subsetPlan(hNeg, [hNeg.elements[0].properties.map(() => true)], 64);
+  assertEq(pNeg.ok, false, "negative count infeasible");
+  assert(pNeg.reasons.some((r) => r.includes("count")), `reason names the count: ${pNeg.reasons.join("|")}`);
+  // parseHeader coerces a fractional count to 0 (warning); the guard still
+  // catches a genuinely non-integer count on a hand-built header object.
+  const hFrac = P.parseHeader(Buffer.from(
+    "ply\nformat binary_little_endian 1.0\nelement vertex 2.5\nproperty float x\nend_header\n"));
+  assertEq(hFrac.elements[0].count, 0, "fractional count coerced to 0 by the parser");
+  const raw = { format: { kind: "binary_little_endian", version: "1.0" }, headerByteLength: 60,
+    comments: [], objInfo: [], warnings: [], elementDisplay: ["vertex"],
+    elements: [{ name: "vertex", count: 2.5, properties: [{ name: "x", isList: false, type: P.TYPES.float, normalized: "float32", bytes: 4, rawLine: "property float x" }] }] };
+  const pFrac = P.subsetPlan(raw, [raw.elements[0].properties.map(() => true)], 64);
+  assertEq(pFrac.ok, false, "non-integer count infeasible");
+  assert(pFrac.reasons.some((r) => r.includes("count")), `reason names the count: ${pFrac.reasons.join("|")}`);
+});
+
+test("M8 stream: binary keep-all emits the body bit-exactly", async () => {
+  const src = fx("3dgs_standard.ply");
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, 3, "all rows");
+  assertDeepEq(res.perElementRows, [3], "per-element rows");
+  assertEq(res.truncated, false);
+  assertEq(res.trailingBytes, 0);
+  assertEq(res.aborted, false);
+  assertDeepEq(Array.from(coalesce(res.chunks)), Array.from(src.subarray(h.headerByteLength)), "body identical");
+});
+
+test("M8 stream: keep 14 props rewrites rows; output decodes to the original values", async () => {
+  const src = fx("3dgs_standard.ply");
+  const h = P.parseHeader(src);
+  const keepNames = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"];
+  const keep = h.elements[0].properties.map((p) => keepNames.includes(p.name));
+  assertEq(keep.filter(Boolean).length, 14, "14 kept");
+  const plan = P.subsetPlan(h, [keep], src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, 3);
+  const out = Buffer.concat([Buffer.from(P.subsetHeader(h, [keep]).text, "utf8"), Buffer.from(coalesce(res.chunks))]);
+  const h2 = P.parseHeader(out);
+  assertEq(h2.elements[0].properties.length, 14, "output property count");
+  assertDeepEq(h2.elements[0].properties.map((p) => p.name), keepNames, "kept order preserved");
+  const exp = P.expectedSize(h2.elements, h2.headerByteLength, h2.format.kind);
+  assertEq(exp.exact, true, "output is fixed-size");
+  assertEq(exp.fixedBytes, 3 * 56, "3 rows x 56 B");
+  assertEq(out.length, h2.headerByteLength + 3 * 56, "output size = header + body");
+  for (const r of [0, 2]) {
+    const rowOut = P.decodeRow(coalesce(res.chunks).subarray(r * 56, (r + 1) * 56), h2.elements[0], false);
+    const rowOrig = P.decodeRow(src.subarray(h.headerByteLength + r * 236, h.headerByteLength + (r + 1) * 236), h.elements[0], false);
+    for (let i = 0; i < 14; i++) {
+      const nm = h2.elements[0].properties[i].name;
+      const oi = h.elements[0].properties.findIndex((p) => p.name === nm);
+      assertDeepEq(rowOut.values[i].value, rowOrig.values[oi].value, `row ${r} ${nm}`);
+    }
+  }
+});
+
+test("M8 stream: big-endian rewrite honors endianness in the copy", async () => {
+  const src = fx("big_endian.ply");
+  const h = P.parseHeader(src);
+  assertEq(h.format.kind, "binary_big_endian");
+  const keep = [true, false, true]; // x (double), count (int, dropped), flag (uchar)
+  const plan = P.subsetPlan(h, [keep], src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, 2, "both rows");
+  const out = Buffer.concat([Buffer.from(P.subsetHeader(h, [keep]).text, "utf8"), Buffer.from(coalesce(res.chunks))]);
+  const h2 = P.parseHeader(out);
+  assertEq(h2.elements[0].properties.map((p) => p.name).join(","), "x,flag", "kept props");
+  const body = coalesce(res.chunks);
+  for (let r = 0; r < 2; r++) {
+    const rowOut = P.decodeRow(body.subarray(r * 9, (r + 1) * 9), h2.elements[0], true);
+    const rowOrig = P.decodeRow(src.subarray(h.headerByteLength + r * 13, h.headerByteLength + (r + 1) * 13), h.elements[0], true);
+    assertDeepEq(rowOut.values[0].value, rowOrig.values[0].value, `row ${r} x (double, BE)`);
+    assertDeepEq(rowOut.values[1].value, rowOrig.values[2].value, `row ${r} flag (uchar)`);
+  }
+  // raw ranges: each 9 B output row = original x (8 B) + original flag (1 B),
+  // the dropped int in between absent
+  assertEq(body.length, 18, "2 rows x 9 B");
+  for (let r = 0; r < 2; r++) {
+    const origRow = src.subarray(h.headerByteLength + r * 13, h.headerByteLength + (r + 1) * 13);
+    assertDeepEq(Array.from(body.subarray(r * 9, r * 9 + 8)), Array.from(origRow.subarray(0, 8)), `row ${r} x bytes`);
+    assertEq(body[r * 9 + 8], origRow[12], `row ${r} flag byte`);
+  }
+});
+
+test("M8 stream: window seam — rows spanning the 8 MB boundary stay intact", async () => {
+  const rows = 2500000; // 10 MB of 4-byte rows: two 8 MB windows with a mid-row seam
+  const hdr = Buffer.from(`ply\nformat binary_little_endian 1.0\nelement vertex ${rows}\nproperty float x\nend_header\n`);
+  const body = Buffer.alloc(rows * 4);
+  for (let r = 0; r < rows; r++) body[r * 4] = r % 251;
+  const src = Buffer.concat([hdr, body]);
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, [[true]], src.length);
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, rows, "every row");
+  assertEq(res.truncated, false);
+  assertEq(res.trailingBytes, 0);
+  assertDeepEq(Array.from(coalesce(res.chunks)), Array.from(body), "seamless copy across the window seam");
+});
+
+test("M8 stream: truncated body writes only complete rows; caller patches the count", async () => {
+  const src = fx("tail_midrow.ply"); // 2 rows claimed, 1 full 4-B row + 2 stray bytes
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, 1, "one complete row");
+  assertDeepEq(res.perElementRows, [1], "per-element rows");
+  assertEq(res.truncated, true, "truncation flagged");
+  assertEq(res.trailingBytes, 0, "no trailing-byte math when truncated");
+  const out = Buffer.concat([
+    Buffer.from(P.subsetHeader({ ...h, elements: h.elements.map((e, i) => ({ ...e, count: res.perElementRows[i] })) }, allKeep(h)).text, "utf8"),
+    Buffer.from(coalesce(res.chunks)),
+  ]);
+  const h2 = P.parseHeader(out);
+  assertEq(h2.elements[0].count, 1, "patched count");
+  assertEq(out.length, h2.headerByteLength + 4, "header + one row");
+  assertDeepEq(Array.from(coalesce(res.chunks)), Array.from(src.subarray(h.headerByteLength, h.headerByteLength + 4)), "complete row verbatim");
+});
+
+test("M8 stream: larger body reports the dropped trailing bytes", async () => {
+  const src = Buffer.concat([fx("3dgs_standard.ply"), Buffer.from([9, 9, 9, 9, 9])]);
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, 3, "all claimed rows");
+  assertEq(res.truncated, false, "not truncation — the body is LARGER");
+  assertEq(res.trailingBytes, 5, "5 dropped trailing bytes");
+});
+
+test("M8 stream: cooperative abort discards partial output", async () => {
+  const src = fx("3dgs_standard.ply");
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  let calls = 0;
+  const flag = { v: false };
+  const res = await P.streamSubset(readChunks(src), h, plan, {
+    fileSize: src.length,
+    isAborted: () => flag.v,
+    onProgress: (p) => { calls++; if (p.rowsDone >= 1) flag.v = true; },
+  });
+  assertEq(res.aborted, true, "abort honored");
+  assertEq(res.truncated, false, "not truncation");
+  assertEq(res.chunks.length, 0, "partial output discarded");
+  assert(calls >= 1, "progress was reported before the abort");
+});
+
+test("M8 stream: ASCII token projection — dropped singles, list counts preserved", async () => {
+  const src = fx("ascii_mesh.ply");
+  const h = P.parseHeader(src);
+  const keepV = h.elements[0].properties.map((p) => !["red", "green", "blue"].includes(p.name));
+  const keepF = h.elements[1].properties.map(() => true);
+  const plan = P.subsetPlan(h, [keepV, keepF], src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.rowsWritten, 6, "4 vertices + 2 faces");
+  assertEq(res.truncated, false);
+  assertEq(res.trailingBytes, 0);
+  assertEq(res.shortLines, 0, "no short lines");
+  const lines = coalesce(res.chunks).split("\n").filter((l) => l.length > 0);
+  assertDeepEq(lines, [
+    "0 0 0 0 0 1",
+    "1 0 0 0 0 1",
+    "1 1 0 0 0 1",
+    "0 1 0 0 0 1",
+    "3 0 1 2",
+    "3 2 3 0",
+  ], "kept tokens, single-space joined; list count travels with its items");
+  const out = Buffer.concat([Buffer.from(P.subsetHeader(h, [keepV, keepF]).text, "utf8"), Buffer.from(coalesce(res.chunks), "utf8")]);
+  const h2 = P.parseHeader(out);
+  assertEq(h2.elements[0].properties.length, 6, "vertex minus colors");
+  assertEq(h2.elements[1].properties[0].isList, true, "face list intact");
+});
+
+test("M8 stream: zero-property element — rows counted, zero bytes emitted (binary)", async () => {
+  const body = Buffer.alloc(2 * 8);
+  body.writeFloatLE(1, 0); body.writeFloatLE(2, 4);
+  body.writeFloatLE(3, 8); body.writeFloatLE(4, 12);
+  const src = Buffer.concat([Buffer.from(
+    "ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nelement edge 3\nend_header\n", "utf8"), body]);
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  assertDeepEq(plan.elements.map((e) => e.mode), ["copy", "copy"], "zero-property element is copy");
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.truncated, false, "not truncated");
+  assertEq(res.rowsWritten, 5, "2 vertex rows + 3 zero-byte edge rows");
+  assertDeepEq(res.perElementRows, [2, 3], "per-element counts");
+  const bodyOut = Buffer.concat(res.chunks);
+  assertEq(bodyOut.length, 16, "body bytes come only from the vertex element");
+  assert(bodyOut.equals(body), "vertex rows bit-exact");
+  const out = Buffer.concat([Buffer.from(P.subsetHeader(h, allKeep(h)).text, "utf8"), bodyOut]);
+  const h2 = P.parseHeader(out);
+  assertEq(h2.elements.length, 2, "output keeps both elements");
+  assertEq(out.length, h2.headerByteLength + 16, "output size consistent with the header");
+});
+
+test("M8 stream: huge-count zero-property element — counted in one step, no spin (freeze regression)", async () => {
+  const src = fx("big_zero.ply"); // 2 vertex rows + `element edge 100000000000` (zero properties)
+  const h = P.parseHeader(src);
+  assertEq(h.elements[1].count, 100000000000, "fixture claims 1e11 zero-byte rows");
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  const t0 = Date.now();
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  const ms = Date.now() - t0;
+  assert(ms < 2000, `streamed in ${ms} ms — a per-row spin over 1e11 rows would never return in time`);
+  assertEq(res.truncated, false, "not truncated");
+  assertEq(res.rowsWritten, 100000000002, "2 vertex rows + 1e11 zero-byte edge rows");
+  assertDeepEq(res.perElementRows, [2, 100000000000], "per-element counts");
+  const bodyOut = Buffer.concat(res.chunks);
+  assertEq(bodyOut.length, 32, "body bytes come only from the vertex element");
+  const out = Buffer.concat([Buffer.from(P.subsetHeader(h, allKeep(h)).text, "utf8"), bodyOut]);
+  const h2 = P.parseHeader(out);
+  assertEq(h2.elements.length, 2, "output keeps both elements");
+  assertEq(h2.elements[1].count, 100000000000, "declaration kept verbatim");
+  assertEq(h2.elements[1].properties.length, 0, "still zero properties");
+  assertEq(out.length, h2.headerByteLength + 32, "output size consistent with the header");
+});
+
+test("M8 stream: ASCII zero-property element — its blank lines are rows", async () => {
+  const src = Buffer.from(
+    "ply\nformat ascii 1.0\nelement vertex 2\nproperty float x\nproperty float y\nelement edge 3\nend_header\n" +
+    "1 2\n3 4\n\n\n\n", "utf8");
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, allKeep(h), src.length);
+  assert(plan.ok, plan.reasons.join("|"));
+  const res = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(res.truncated, false, "blank lines are the element's rows, not EOF");
+  assertEq(res.rowsWritten, 5, "2 vertices + 3 edge rows");
+  assertDeepEq(res.perElementRows, [2, 3], "per-element counts");
+  assertDeepEq(res.chunks, ["1 2\n", "3 4\n", "\n", "\n", "\n"], "edge rows re-emitted as blank lines");
+});
+
+// ---------------------------------------------------------------------------
+// M8 freeze guard (PLAN §12.4): cooperative yields + linear coalescing
+// ---------------------------------------------------------------------------
+// The pre-fix UI merge re-allocated and re-copied the WHOLE accumulator for
+// every per-row part — O(output²/row) — which froze the page for minutes on
+// a few-hundred-MB download (user-reported: "the page freezes when I click
+// download"). The core coalesceParts copies every byte exactly once, reports
+// byte progress, yields to the event loop per segment, and honors Abort.
+const rowParts = (rows, rowBytes) => {
+  const src = Buffer.alloc(rows * rowBytes);
+  for (let i = 0; i < src.length; i++) src[i] = (i * 31 + 7) % 256;
+  const parts = new Array(rows);
+  for (let r = 0; r < rows; r++) parts[r] = src.subarray(r * rowBytes, (r + 1) * rowBytes);
+  return { src, parts };
+};
+
+test("M8 coalesceParts: binary parts reassemble bit-exactly in 16 MB segments", async () => {
+  const { src, parts } = rowParts(150000, 232); // 34.8 MB -> 3 segments
+  const res = await P.coalesceParts(parts, false, {});
+  assertEq(res.aborted, false);
+  assertEq(res.parts.length, 3, "16 MB segment split");
+  assert(Buffer.concat(res.parts).equals(src), "bit-exact reassembly");
+});
+
+test("M8 coalesceParts: ASCII parts join exactly", async () => {
+  const parts = new Array(200000);
+  for (let i = 0; i < parts.length; i++) parts[i] = String(i % 1000) + " ";
+  const res = await P.coalesceParts(parts, true, {});
+  assertEq(res.aborted, false);
+  assertEq(res.parts.length, 4, "the 65 536 string-part cap splits 200 000 parts (tiny total)");
+  const joined = res.parts.join("");
+  assertEq(joined.length, parts.reduce((s, p) => s + p.length, 0), "all characters present");
+  assertEq(joined.slice(0, 8), "0 1 2 3 ", "head");
+  assertEq(joined.slice(-4), "999 ", "tail");
+});
+
+test("M8 coalesceParts: progress starts with the total, is monotone, ends exactly at it", async () => {
+  const { parts } = rowParts(150000, 232);
+  const total = 150000 * 232;
+  const ev = [];
+  let yields = 0;
+  const res = await P.coalesceParts(parts, false, {
+    onProgress: (done, tot) => ev.push([done, tot]),
+    yielder: async () => { yields++; },
+  });
+  assertEq(res.aborted, false);
+  assertEq(ev.length, 4, "initial (0,total) + one event per flushed segment");
+  assertDeepEq(ev[0], [0, total], "first event carries the total up front");
+  for (let i = 1; i < ev.length; i++) assert(ev[i][0] > ev[i - 1][0], "monotone");
+  assertDeepEq(ev[ev.length - 1], [total, total], "ends exactly at the total");
+  assertEq(yields, 2, "one yield per in-loop segment (the final tail flush has no follow-up work)");
+});
+
+test("M8 coalesceParts: abort mid-assembly discards everything", async () => {
+  const { parts } = rowParts(150000, 232);
+  let aborted = false;
+  const res = await P.coalesceParts(parts, false, {
+    isAborted: () => aborted,
+    yielder: async () => { aborted = true; },
+  });
+  assertEq(res.aborted, true, "abort raised mid-assembly is honored");
+  assertEq(res.parts.length, 0, "all output discarded");
+  const pre = await P.coalesceParts(parts, false, { isAborted: () => true });
+  assertEq(pre.aborted, true, "pre-set abort is honored before any copy");
+});
+
+test("M8 coalesceParts: scale — 46 MB of 232 B parts coalesces in well under a minute (linear, not quadratic)", async () => {
+  const { parts } = rowParts(200000, 232);
+  const t0 = Date.now();
+  const res = await P.coalesceParts(parts, false, {});
+  const ms = Date.now() - t0;
+  assertEq(res.aborted, false);
+  assertEq(Buffer.concat(res.parts).length, 200000 * 232, "full output");
+  assert(ms < 30000,
+    `coalesced in ${ms} ms — the quadratic pre-fix merge would take tens of minutes at this scale`);
+});
+
+test("M8 stream: cooperative yields — yielder awaited on the wall-time budget, output unchanged", async () => {
+  const rows = 100000;
+  const hdr = Buffer.from(`ply\nformat binary_little_endian 1.0\nelement vertex ${rows}\nproperty float x\nend_header\n`);
+  const body = Buffer.alloc(rows * 4);
+  for (let r = 0; r < rows; r++) body[r * 4] = r % 251;
+  const src = Buffer.concat([hdr, body]);
+  const h = P.parseHeader(src);
+  const plan = P.subsetPlan(h, [[true]], src.length);
+  let t = 0, yields = 0; // deterministic fake clock: +1 "ms" per now() call
+  const res = await P.streamSubset(readChunks(src), h, plan, {
+    fileSize: src.length,
+    yielder: async () => { yields++; },
+    now: () => ++t,
+    yieldBudgetMs: 1000,
+  });
+  assertEq(res.rowsWritten, rows, "all rows written");
+  assertEq(res.truncated, false);
+  assertDeepEq(Array.from(coalesce(res.chunks)), Array.from(body), "output unchanged");
+  assert(yields >= 90 && yields <= 110,
+    `yielded ~once per budget (${yields} yields) — the event loop was handed back periodically`);
+  const resNoYield = await P.streamSubset(readChunks(src), h, plan, { fileSize: src.length });
+  assertEq(resNoYield.rowsWritten, rows, "no yielder -> unchanged behavior");
+});
+
+// ---------------------------------------------------------------------------
+// summary (drains the queue — async tests included — then reports)
+// ---------------------------------------------------------------------------
+for (const t of queued) {
+  try {
+    await Promise.resolve(t.fn());
+    passed++;
+    console.log(`  ok   ${t.name}`);
+  } catch (err) {
+    failed++;
+    failures.push({ name: t.name, err });
+    console.error(`  FAIL ${t.name}\n       ${err.message}`);
+  }
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   console.error("\nFailures:");

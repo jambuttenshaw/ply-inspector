@@ -186,6 +186,35 @@
   /* M7.3: which alias satisfied a property (file name -> canonical name) */
   .relrow .aliasnote { font-family: var(--mono); font-size: 11.5px; color: var(--muted); word-break: break-all; flex-basis: 100%; }
 
+  /* ---------- Download PLY (M8) ---------- */
+  .dlsub { border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); padding: 8px 10px; margin-bottom: 8px; }
+  .dlsubhead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+  .dlsubhead .nm { font-weight: 600; font-size: 13px; }
+  .dlsubhead .cnt { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .dlsubhead .acts { display: flex; gap: 6px; }
+  .dlsubhead .dlsz { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-left: auto; }
+  .dlgrid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .prop-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+    font-size: 12px; cursor: pointer; user-select: none; background: var(--bg);
+  }
+  .prop-chip:hover { border-color: var(--accent); }
+  .prop-chip.on { border-color: var(--accent); background: rgba(88,166,255,.08); }
+  .prop-chip input { margin: 0; accent-color: var(--accent); }
+  .prop-chip .nm { font-weight: 600; }
+  .prop-chip .ct { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
+  .prop-chip .tp { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .dlest { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .dlreasons { border: 1px solid rgba(248,81,73,.55); background: rgba(248,81,73,.08); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; color: var(--red); font-size: 12.5px; }
+  .dlreasons div { font-family: var(--mono); font-size: 12px; }
+  .dlprog { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .dlbar { flex: 1; height: 8px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--border); overflow: hidden; }
+  .dlbarfill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .15s; }
+  .dlptext { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .dlresult { margin-top: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--green); }
+  .dlfoot { margin-top: 10px; }
+
   /* ---------- buttons ---------- */
   .btn {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
@@ -193,6 +222,12 @@
   }
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn.mini { padding: 1px 8px; font-size: 11.5px; border-radius: 5px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn.primary:hover { color: #fff; border-color: var(--accent); filter: brightness(1.12); }
+  .btn.danger { border-color: var(--red); color: var(--red); }
+  .btn.danger:hover { background: rgba(248,81,73,.1); border-color: var(--red); color: var(--red); }
   .actions { display: flex; gap: 8px; margin-left: auto; }
   .rowjump input[type="number"] {
     width: 90px; background: var(--bg); color: var(--text);
@@ -807,12 +842,576 @@
     };
   }
 
+  // --- M8: subset download (PLAN §12) --------------------------------------
+  // Downloading copies raw byte ranges of the kept properties — it never
+  // decodes or re-encodes a value, so every kept value is bit-exact in the
+  // output. All functions here are pure and Node-testable: projectRow /
+  // rowBounds take a byte buffer directly, and streamSubset takes an injected
+  // chunk reader (browser: file.slice().arrayBuffer(); tests: Buffer).
+  // streamSubset and coalesceParts are cooperative: with an injected
+  // yielder they hand the event loop back to the browser periodically, so
+  // the progress bar keeps painting and Abort clicks are handled on large
+  // files — the freeze guard (PLAN §12.4).
+
+  // Grouping is pure name-pattern (no signature knowledge) and drives the
+  // download checkboxes. The two patterns are disjoint — a property name ends
+  // in a digit OR in one of x/y/z, never both — so there is no precedence
+  // collision. Groups must share one normalized type; list properties are
+  // never grouped (their rows are variable-length by definition).
+  //   indexed — ≥ 2 props `base_0…base_N` sharing a base (holes are fine;
+  //             the chip carries the actual member count, e.g. `f_rest (11)`);
+  //   axis    — ≥ 2 props sharing a prefix, names ending in x/y/z (covers
+  //             nx/ny/nz, normal_x/y/z, and bare x/y/z with an empty prefix);
+  //   single  — everything else (scalars, lists, 1-member candidates,
+  //             pattern-unrelated triples like red/green/blue).
+  // Returns [{ kind, label, sublabel, type, members, bytesPerRow }] in
+  // declaration order; `members` = property indices, disjoint, covering all.
+  function propertyGroups(element) {
+    const props = element.properties;
+    const byIndexed = new Map();
+    const byAxis = new Map();
+    props.forEach((p, i) => {
+      if (p.isList || !p.name) return; // lists and unnamed props are never grouped
+      const m = p.name.match(/^(.+)_(\d+)$/);
+      if (m && m[1].length > 0) {
+        if (!byIndexed.has(m[1])) byIndexed.set(m[1], []);
+        byIndexed.get(m[1]).push(i);
+      } else if (/[xyz]$/.test(p.name)) {
+        const pref = p.name.slice(0, -1);
+        if (!byAxis.has(pref)) byAxis.set(pref, []);
+        byAxis.get(pref).push(i);
+      }
+    });
+
+    const groupOf = new Array(props.length).fill(null);
+    const sameType = (members) => members.every((i) => props[i].type === props[members[0]].type);
+    for (const [base, members] of byIndexed) {
+      if (members.length < 2 || !sameType(members)) continue; // mixed types → singles
+      const g = {
+        kind: "indexed", label: base,
+        sublabel: `${props[members[0]].name} … ${props[members[members.length - 1]].name}`,
+        type: props[members[0]].normalized,
+        members,
+        bytesPerRow: members.reduce((s, i) => s + (props[i].bytes || 0), 0),
+      };
+      for (const i of members) groupOf[i] = g;
+    }
+    for (const [pref, members] of byAxis) {
+      if (members.length < 2 || !sameType(members)) continue;
+      const g = {
+        kind: "axis", label: members.map((i) => props[i].name).join(", "),
+        sublabel: null,
+        type: props[members[0]].normalized,
+        members,
+        bytesPerRow: members.reduce((s, i) => s + (props[i].bytes || 0), 0),
+      };
+      for (const i of members) groupOf[i] = g;
+    }
+
+    const groups = [];
+    const seen = new Set();
+    props.forEach((p, i) => {
+      const g = groupOf[i];
+      if (g) { if (!seen.has(g)) { seen.add(g); groups.push(g); } return; }
+      groups.push({
+        kind: "single",
+        label: p.name != null ? p.name : `#${i} (unnamed)`,
+        sublabel: null,
+        type: p.normalized,
+        members: [i],
+        bytesPerRow: p.isList ? (p.fixedBytes || 0) : (p.bytes || 0),
+      });
+    });
+    return groups;
+  }
+
+  // Read a PLY integer value (used for list count prefixes) honoring
+  // endianness. The 16-type table has no 64-bit integers, so an 8-byte count
+  // type is read as its float width and truncated (pathological, tolerated).
+  function readInt(dv, off, bigEndian, type) {
+    const b = type.bytes, s = type.signed;
+    if (b === 1) return s ? dv.getInt8(off) : dv.getUint8(off);
+    if (b === 2) return s ? dv.getInt16(off, bigEndian) : dv.getUint16(off, bigEndian);
+    if (b === 4) return s ? dv.getInt32(off, bigEndian) : dv.getUint32(off, bigEndian);
+    return Math.max(0, Math.floor(b === 8 ? dv.getFloat64(off, bigEndian) : dv.getFloat32(off, bigEndian)));
+  }
+
+  // Byte length of one binary row (list items included). Returns
+  // { bytes: -1, complete: false } when the row runs past the end of src.
+  // Unknown-width properties count as 0 (same convention as expectedSize).
+  function rowBounds(src, offset, element, bigEndian) {
+    const dv = new DataView(src.buffer, src.byteOffset, src.byteLength);
+    const end = src.byteLength;
+    let off = 0;
+    for (const p of element.properties) {
+      if (p.isList) {
+        if (!p.countType || !p.itemType) return { bytes: -1, complete: false };
+        if (offset + off + p.countType.bytes > end) return { bytes: -1, complete: false };
+        const count = Math.max(0, readInt(dv, offset + off, bigEndian, p.countType));
+        const need = p.countType.bytes + count * p.itemType.bytes;
+        if (offset + off + need > end) return { bytes: -1, complete: false };
+        off += need;
+      } else {
+        if (offset + off + (p.bytes || 0) > end) return { bytes: -1, complete: false };
+        off += p.bytes || 0;
+      }
+    }
+    return { bytes: off, complete: true };
+  }
+
+  // Project one binary row onto the kept properties (keep = boolean[] aligned
+  // with element.properties). Kept properties are copied as raw byte ranges —
+  // bit-exact. Returns { out: null, complete: false } if the row is cut off.
+  function projectRow(src, offset, element, keep, bigEndian) {
+    const dv = new DataView(src.buffer, src.byteOffset, src.byteLength);
+    const end = src.byteLength;
+    const segs = [];
+    let off = 0;
+    for (let pi = 0; pi < element.properties.length; pi++) {
+      const p = element.properties[pi];
+      let len;
+      if (p.isList) {
+        if (!p.countType || !p.itemType) return { out: null, complete: false };
+        if (offset + off + p.countType.bytes > end) return { out: null, complete: false };
+        const count = Math.max(0, readInt(dv, offset + off, bigEndian, p.countType));
+        len = p.countType.bytes + count * p.itemType.bytes;
+      } else {
+        len = p.bytes || 0;
+      }
+      if (offset + off + len > end) return { out: null, complete: false };
+      if (keep[pi]) segs.push({ start: offset + off, len });
+      off += len;
+    }
+    const total = segs.reduce((s, g) => s + g.len, 0);
+    const out = new Uint8Array(total);
+    let d = 0;
+    for (const g of segs) { out.set(src.subarray(g.start, g.start + g.len), d); d += g.len; }
+    return { out, complete: true };
+  }
+
+  // Rebuild the PLY header for a keep selection. keepSets = one boolean[] per
+  // element, aligned with that element's properties. Elements with properties
+  // of which none are kept are dropped entirely; elements with ZERO
+  // properties are kept as a declaration line (nothing to select there, so a
+  // keep-all download stays a faithful copy). Original comment/obj_info lines
+  // are kept verbatim; one `comment PLY Inspector:` line is added (no
+  // timestamp — deterministic output). LF line endings, trailing newline, no BOM.
+  // Returns { text, byteLength, keptPerElement, expectedBodyBytes, variable }
+  // where expectedBodyBytes is the fixed-size contribution (a lower bound when
+  // any kept element has list properties, i.e. variable === true).
+  function subsetHeader(header, keepSets) {
+    const keptPerElement = header.elements.map((el, ei) =>
+      (keepSets[ei] || []).reduce((s, b) => s + (b ? 1 : 0), 0));
+    const lines = ["ply", `format ${header.format.kind} ${header.format.version}`];
+    const keptParts = header.elements
+      .map((el, ei) => (keptPerElement[ei] > 0 || el.properties.length === 0)
+        ? `${header.elementDisplay[ei]} ${keptPerElement[ei]}/${el.properties.length}` : null)
+      .filter((x) => x !== null);
+    if (keptParts.length > 0) lines.push(`comment PLY Inspector: kept ${keptParts.join("; ")}`);
+    for (const c of header.comments) lines.push(`comment ${c.text}`);
+    for (const o of header.objInfo) lines.push(`obj_info ${o.text}`);
+    let expectedBodyBytes = 0;
+    let variable = false;
+    header.elements.forEach((el, ei) => {
+      if (keptPerElement[ei] === 0 && el.properties.length > 0) return; // nothing kept; zero-property elements stay as declarations
+      lines.push(`element ${el.name} ${el.count}`);
+      el.properties.forEach((p, pi) => {
+        if (!(keepSets[ei] || [])[pi]) return;
+        lines.push(p.rawLine);
+        if (p.isList) variable = true;
+        else expectedBodyBytes += (p.bytes || 0) * Math.max(0, el.count || 0);
+      });
+    });
+    lines.push("end_header");
+    const text = lines.join("\n") + "\n";
+    return { text, byteLength: new TextEncoder().encode(text).length, keptPerElement, expectedBodyBytes, variable };
+  }
+
+  // Pre-flight plan for a download: per-element mode (copy | rewrite | drop),
+  // body offset (binary only — null once a variable-length region makes the
+  // position unknowable, and always null for ASCII), row count, old/new row
+  // size, and the output-size estimate. Infeasible selections come back as
+  // ok: false with reasons the UI lists (Download stays visible, disabled).
+  // `fileSize` is accepted for API symmetry; the streamer detects truncation
+  // via short reads, so the plan does not need it.
+  function subsetPlan(header, keepSets, fileSize) {
+    const reasons = [];
+    const elements = [];
+    let offset = header.headerByteLength;
+    // ASCII body positions are line-based, never byte offsets.
+    let offsetKnown = header.format.kind !== "ascii";
+    let totalKept = 0, totalProps = 0, bodyEstimate = 0;
+    let exact = true;
+    header.elements.forEach((el, ei) => {
+      const keep = (keepSets[ei] || []).map((b) => !!b);
+      const n = el.properties.length;
+      const kept = keep.reduce((s, b) => s + (b ? 1 : 0), 0);
+      totalKept += kept; totalProps += n;
+      const count = el.count;
+      const countOk = Number.isInteger(count) && count >= 0;
+      const hasList = el.properties.some((p) => p.isList);
+      const rowBytes = el.properties.reduce((s, p) => s + (p.isList ? (p.fixedBytes || 0) : (p.bytes || 0)), 0);
+      const newRowBytes = el.properties.reduce((s, p, pi) =>
+        keep[pi] ? s + (p.isList ? (p.fixedBytes || 0) : (p.bytes || 0)) : s, 0);
+
+      let mode;
+      if (!countOk) {
+        mode = "drop";
+        reasons.push(`cannot stream "${header.elementDisplay[ei]}": element count ${count} is not a non-negative integer`);
+      } else {
+        mode = kept === n ? "copy" : kept === 0 ? "drop" : "rewrite";
+        // Walking rows past dropped properties (rewrite or drop) requires
+        // known types on every property. Copy is exempt: raw ranges need no
+        // type knowledge. ASCII token projection is always feasible.
+        if (header.format.kind !== "ascii" && mode !== "copy") {
+          const bad = el.properties.find((p) => (p.isList ? !p.countType || !p.itemType : !p.type));
+          if (bad) reasons.push(`cannot re-encode "${header.elementDisplay[ei]}": unknown type "${bad.rawType}" on property "${bad.name != null ? bad.name : "(unnamed)"}"`);
+        }
+      }
+      elements.push({ mode, offset: offsetKnown ? offset : null, rows: countOk ? count : 0, newRowBytes, rowBytes, hasList, keep });
+
+      if (countOk) {
+        if (header.format.kind === "ascii") {
+          exact = false; // ASCII output is re-tokenized, not sized
+        } else if (hasList) {
+          offsetKnown = false; // variable rows: the region can't be skipped arithmetically
+          if (mode !== "drop") { bodyEstimate += count * newRowBytes; exact = false; } // lower bound
+        } else {
+          offset += count * rowBytes;
+          if (mode !== "drop") bodyEstimate += count * newRowBytes;
+        }
+      } else {
+        offsetKnown = false;
+      }
+    });
+    if (totalKept === 0) reasons.unshift("no properties selected — check at least one group");
+    const hdr = subsetHeader(header, keepSets);
+    return {
+      ok: reasons.length === 0, reasons, elements,
+      estimatedOutSize: hdr.byteLength + bodyEstimate,
+      headerBytes: hdr.byteLength, exact, variable: hdr.variable,
+    };
+  }
+
+  // Stream the subset body in 8 MB windows. readChunk(start, end) must return
+  // Promise<Uint8Array> clamped to EOF (a short buffer signals EOF); the
+  // browser glue uses file.slice(start, end).arrayBuffer().
+  //
+  // Binary: copy mode emits raw row ranges (no per-row type walk); rewrite
+  // mode projects each row via projectRow; drop walks rows away (measured, so
+  // it also handles list rows). Zero-property elements need no per-row work
+  // at all (their rows are zero bytes) and are counted in one step, so a
+  // huge claimed count can never spin the loop. Variable-length (list) rows
+  // are measured with rowBounds before emitting. ASCII: one line per row, kept-token projection
+  // (a list count token travels with its items; dropped lists skip
+  // 1 + count tokens; blank lines are consumed, not rows — except for
+  // zero-property elements, where every line, blank or not, IS a row).
+  //
+  // Returns { chunks, rowsWritten, perElementRows, truncated, trailingBytes,
+  // aborted, shortLines }. chunks are the per-row output parts — Uint8Array
+  // pieces (binary) or strings (ASCII); the UI merges them with the core
+  // coalesceParts (linear + cooperative) and wraps the result in a Blob. A
+  // truncated body emits only complete rows (the header counts are patched by
+  // the caller via the perElementRows result); a larger body reports the
+  // dropped trailing bytes. abort is cooperative: isAborted() is checked per
+  // row and partial output is discarded on abort.
+  async function streamSubset(readChunk, header, plan, opts) {
+    const CHUNK = 8 * 1024 * 1024;
+    const onProgress = opts.onProgress || null;
+    const isAborted = opts.isAborted || (() => false);
+    const fileEnd = (typeof opts.fileSize === "number" && Number.isFinite(opts.fileSize)) ? opts.fileSize : Infinity;
+    // Cooperative yielding (freeze guard, PLAN §12.4): the per-row loops are
+    // microtask chains, so without an explicit yield the page can only
+    // repaint between 8 MB I/O windows — the progress bar stutters and
+    // clicks (Abort) queue up. When the caller supplies a yielder
+    // (browser: setTimeout 0), each loop hands the event loop back to the
+    // browser once yieldBudgetMs of wall time has passed: the bar keeps
+    // painting, Abort clicks are handled mid-window, and the page never
+    // looks frozen. Default (no yielder): no yields, unchanged behavior
+    // (Node tests). now defaults to Date.now (a vm-friendly clock).
+    const yielder = opts.yielder || null;
+    const nowMs = opts.now || (() => Date.now());
+    const yieldBudget = opts.yieldBudgetMs || 24;
+    let lastYield = yielder ? nowMs() : 0;
+    const yieldIfDue = () => {
+      if (!yielder) return false;
+      const t = nowMs();
+      if (t - lastYield < yieldBudget) return false;
+      lastYield = t;
+      return true;
+    };
+    const bigEndian = header.format.kind === "binary_big_endian";
+    const E = header.elements.length;
+    const out = [];
+    const perElementRows = new Array(E).fill(0);
+    const rowsTotal = plan.elements.reduce((s, pe) => s + pe.rows, 0);
+    let rowsWritten = 0, outBytes = 0, truncated = false, aborted = false, shortLines = 0;
+
+    const progress = (elementIndex) => {
+      if (onProgress) onProgress({ rowsDone: rowsWritten, rowsTotal, bytesOut: outBytes, elementIndex });
+    };
+
+    if (header.format.kind === "ascii") {
+      // --- ASCII: token projection, one row per line ---
+      const enc = new TextEncoder();
+      const dec = new TextDecoder("utf-8", { fatal: false });
+      let pos = header.headerByteLength; // file offset of the start of `carry`
+      let carry = "";                    // text from pos, up to (not incl.) the next \n
+      let endPos = header.headerByteLength; // file offset after the last consumed byte
+
+      const nextLine = async () => {
+        for (;;) {
+          const nl = carry.indexOf("\n");
+          if (nl !== -1) {
+            const raw = carry.slice(0, nl);
+            const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+            const byteLen = enc.encode(raw).length + 1; // +1 for the \n
+            carry = carry.slice(nl + 1);
+            pos += byteLen;
+            endPos = pos;
+            return { line, start: pos - byteLen, end: pos };
+          }
+          if (pos >= fileEnd) {
+            if (carry === "") return null; // clean EOF
+            const line = carry.endsWith("\r") ? carry.slice(0, -1) : carry;
+            const byteLen = enc.encode(carry).length;
+            pos += byteLen;
+            endPos = pos;
+            carry = "";
+            return { line, start: endPos - byteLen, end: endPos }; // final line without \n
+          }
+          const fresh = await readChunk(pos, Math.min(fileEnd, pos + CHUNK));
+          carry += dec.decode(fresh, { stream: true }); // stream: keep a partial multibyte tail
+        }
+      };
+
+      for (let ei = 0; ei < E && !truncated && !aborted; ei++) {
+        const el = header.elements[ei];
+        const pe = plan.elements[ei];
+        const keep = pe.keep;
+        let r = 0;
+        if (el.properties.length === 0) {
+          // Zero-property element: every line of its region is a row (blank
+          // lines being the row form), so no blank-line skipping here.
+          while (r < pe.rows) {
+            if (isAborted()) { aborted = true; break; }
+            if (yieldIfDue()) await yielder();
+            const L = await nextLine();
+            if (!L) { truncated = true; break; }
+            out.push("\n"); // keep row alignment, same as a fully dropped row
+            outBytes += 1;
+            r += 1; rowsWritten += 1;
+            progress(ei);
+          }
+          perElementRows[ei] = r;
+          continue;
+        }
+        while (r < pe.rows) {
+          if (isAborted()) { aborted = true; break; }
+          if (yieldIfDue()) await yielder();
+          const L = await nextLine();
+          if (!L) { truncated = true; break; } // ran out of lines before the claimed count
+          const toks = L.line.length ? L.line.trim().split(/\s+/) : [];
+          if (toks.length === 0) continue; // blank line: consumed from the file, not a row
+          const kept = [];
+          let t = 0, short = false;
+          for (let pi = 0; pi < el.properties.length; pi++) {
+            const p = el.properties[pi];
+            if (p.isList) {
+              if (t >= toks.length) { short = true; break; }
+              const cnt = Math.max(0, parseInt(toks[t], 10) || 0);
+              const countTok = toks[t];
+              t += 1;
+              const items = toks.slice(t, t + cnt);
+              if (items.length < cnt) short = true;
+              if (keep[pi]) kept.push(countTok, ...items);
+              t += cnt;
+            } else {
+              if (t >= toks.length) { short = true; break; }
+              if (keep[pi]) kept.push(toks[t]);
+              t += 1;
+            }
+          }
+          if (short) shortLines += 1;
+          const part = kept.length ? kept.join(" ") + "\n" : "\n"; // keep row alignment
+          out.push(part);
+          outBytes += part.length;
+          r += 1;
+          rowsWritten += 1;
+          progress(ei);
+        }
+        perElementRows[ei] = r;
+      }
+      const trailingBytes = (truncated || aborted) ? 0 : Math.max(0, fileEnd - endPos);
+      if (aborted) { out.length = 0; outBytes = 0; }
+      return { chunks: out, rowsWritten, perElementRows, truncated, trailingBytes, aborted, shortLines };
+    }
+
+    // --- Binary: windowed raw walk ---
+    let buf = null, bufStart = 0, bufCursor = 0; // file offset of buf[0] / next byte to consume
+    let eof = false;
+    let endPos = header.headerByteLength;
+
+    const topUp = async () => {
+      if (eof) return false;
+      const next = buf ? bufStart + buf.length : header.headerByteLength;
+      if (next >= fileEnd) { eof = true; return false; }
+      const fresh = await readChunk(next, Math.min(fileEnd, next + CHUNK));
+      if (fresh.length === 0) { eof = true; return false; }
+      if (buf && bufCursor < buf.length) { // carry the unconsumed tail over the window seam
+        const rem = buf.length - bufCursor;
+        const nb = new Uint8Array(rem + fresh.length);
+        nb.set(buf.subarray(bufCursor), 0);
+        nb.set(fresh, rem);
+        buf = nb;
+        bufStart += bufCursor;
+        bufCursor = 0;
+      } else {
+        buf = fresh;
+        bufStart = next;
+        bufCursor = 0;
+      }
+      return true;
+    };
+    const ensure = async (n) => {
+      for (;;) {
+        const avail = buf ? buf.length - bufCursor : 0;
+        if (avail >= n) return true;
+        if (eof) return false;
+        await topUp();
+      }
+    };
+
+    for (let ei = 0; ei < E && !truncated && !aborted; ei++) {
+      const el = header.elements[ei];
+      const pe = plan.elements[ei];
+      const rows = pe.rows;
+      const fullRowBytes = pe.rowBytes;
+      let r = 0;
+      if (fullRowBytes === 0 && !pe.hasList) {
+        // Zero-property element: every row is zero bytes, so there is no
+        // per-row work and no I/O — count them in one step. (A per-row loop
+        // here would spin `count` times without ever yielding: a small file
+        // whose bare element claims a huge count would freeze the page on
+        // download, and the Abort button could never even be processed.)
+        r = rows;
+        rowsWritten += rows;
+        progress(ei);
+        perElementRows[ei] = r;
+        continue;
+      }
+      while (r < rows) {
+        if (isAborted()) { aborted = true; break; }
+        if (yieldIfDue()) await yielder();
+        if (!pe.hasList) {
+          if (!(await ensure(fullRowBytes))) { truncated = true; break; } // incomplete row at EOF
+          if (pe.mode === "copy") {
+            out.push(buf.subarray(bufCursor, bufCursor + fullRowBytes));
+            outBytes += fullRowBytes;
+          } else if (pe.mode === "rewrite") {
+            const pr = projectRow(buf, bufCursor, el, pe.keep, bigEndian); // bufCursor is the row's offset WITHIN buf
+            if (!pr.complete) { truncated = true; break; } // defensive; the row is fully buffered
+            out.push(pr.out);
+            outBytes += pr.out.length;
+          } // drop: consume only
+          bufCursor += fullRowBytes;
+          endPos = bufStart + bufCursor;
+        } else {
+          // Variable row: measure across window seams, then emit the exact range.
+          if (!(await ensure(1))) { truncated = true; break; }
+          let bytes = -1, complete = false;
+          for (;;) {
+            const b = rowBounds(buf, bufCursor, el, bigEndian); // offset within buf, not the file
+            if (b.complete) { bytes = b.bytes; complete = true; break; }
+            if (!(await ensure(buf.length - bufCursor + 1))) break; // EOF mid-row
+          }
+          if (!complete) { truncated = true; break; }
+          if (pe.mode === "copy") {
+            out.push(buf.subarray(bufCursor, bufCursor + bytes));
+            outBytes += bytes;
+          } else if (pe.mode === "rewrite") {
+            const pr = projectRow(buf, bufCursor, el, pe.keep, bigEndian);
+            if (!pr.complete) { truncated = true; break; }
+            out.push(pr.out);
+            outBytes += pr.out.length;
+          }
+          bufCursor += bytes;
+          endPos = bufStart + bufCursor;
+        }
+        r += 1;
+        rowsWritten += 1;
+        progress(ei);
+      }
+      perElementRows[ei] = r;
+    }
+    const trailingBytes = (truncated || aborted) ? 0 : Math.max(0, fileEnd - endPos);
+    if (aborted) { out.length = 0; outBytes = 0; }
+    return { chunks: out, rowsWritten, perElementRows, truncated, trailingBytes, aborted, shortLines };
+  }
+
+  // Coalesce the streamer's per-row parts into a few large Blob parts. The
+  // stream emits one part per row — hundreds of thousands for a typical 3DGS
+  // file — and handing that many parts to `new Blob(...)` is slow and heavy
+  // on some engines. Each segment of at most 16 MB (or 65 536 string parts,
+  // ASCII) is copied exactly ONCE into a single buffer, so the total work is
+  // O(output size). (The previous grow-a-buffer-per-part merge re-copied the
+  // whole accumulator per part — O(output²/row) — and froze the page for
+  // minutes on a few-hundred-MB download: the user-reported freeze.) The
+  // function is async and cooperative: it first reports the total, then,
+  // after every flushed segment, reports progress (doneBytes, totalBytes),
+  // honors a cooperative abort (any abort discards EVERYTHING), and awaits
+  // the injected yielder — so the main thread (progress bar, Abort clicks,
+  // repaints) stays responsive throughout the assembly (freeze guard,
+  // PLAN §12.4). All hooks are optional; with none, this is a plain linear
+  // (async) merge. Returns { parts, aborted }: parts is the Blob-ready array
+  // (one Uint8Array per segment for binary, one joined string per segment
+  // for ASCII; [] on abort), aborted mirrors the flag at the abort point.
+  async function coalesceParts(parts, isAscii, hooks) {
+    const h = hooks || {};
+    const onProgress = h.onProgress || null;
+    const isAborted = h.isAborted || null;
+    const yielder = h.yielder || null;
+    const SEG = 16 * 1024 * 1024;
+    if (isAborted && isAborted()) return { parts: [], aborted: true };
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    if (onProgress) onProgress(0, total);
+    const out = [];
+    let seg = null, n = 0, cnt = 0, done = 0;
+    const flush = () => {
+      if (cnt === 0) return;
+      if (isAscii) {
+        out.push(seg.join(""));
+      } else {
+        const nb = new Uint8Array(n);
+        let d = 0;
+        for (const p of seg) { nb.set(p, d); d += p.length; }
+        out.push(nb);
+      }
+      done += n;
+      if (onProgress) onProgress(done, total);
+      seg = null; n = 0; cnt = 0;
+    };
+    for (const p of parts) {
+      if (seg === null) { seg = [p]; n = p.length; }
+      else { seg.push(p); n += p.length; }
+      cnt += 1;
+      if (n >= SEG || cnt >= 65536) {
+        flush();
+        if (isAborted && isAborted()) return { parts: [], aborted: true };
+        if (yielder) await yielder();
+      }
+    }
+    flush();
+    return { parts: out, aborted: false };
+  }
+
   // --- export surface for tests / console use ---
   const PLY = {
     TYPES, SIGNATURES, FEATURES,
     parseHeader, expectedSize, sizeCheck, detect3DGS, detectRelighting,
     decodeRow, decodeFirstVertex,
     rowJumpInfo, tailCheckInfo, decodeRowAt,
+    propertyGroups, projectRow, rowBounds, subsetHeader, subsetPlan, streamSubset, coalesceParts,
     PlyError,
   };
   globalThis.PLYInspector = PLY;
@@ -994,6 +1593,11 @@
           }
         }
         next.parseMs = performance.now() - t0;
+        // M8: per-file download state — one checkbox per property GROUP
+        // (propertyGroups is pure name-pattern grouping). The per-property
+        // keepSets are derived from group state whenever a plan is computed.
+        const dlGroups = header.elements.map((el) => PLY.propertyGroups(el));
+        next.dl = { groups: dlGroups, checked: dlGroups.map((gs) => gs.map(() => true)), plan: null, busy: false };
         state = next;
         if (lastFileName) crumbEl.textContent = `last inspected: ${lastFileName}`;
         lastFileName = file.name;
@@ -1027,6 +1631,7 @@
         renderOtherElementsCard(s),
       );
       if (s.firstVertex) appendCards(resultsEl, renderRowPreviewCard(s));
+      appendCards(resultsEl, renderDownloadCard(s));
       appendCards(resultsEl,
         renderCommentsCard(s),
         renderRawHeaderCard(s),
@@ -1341,6 +1946,259 @@
         el("div", {}, noteEl, capEl, gridEl));
     }
 
+    // M8: the download card. Checkboxes group whole property families (the
+    // `f_rest` chip toggles all 45 coefficients); the estimate, per-element
+    // sizes, and feasibility note recompute in place on every change — no
+    // full re-render, so toggling is instant even for 100-property files.
+    function renderDownloadCard(s) {
+      if (!s.dl) return null;
+      const h = s.header;
+      const groups = s.dl.groups;
+      const refs = { est: null, sizes: [], reasons: null, dlBtn: null, abortBtn: null,
+        prog: null, progBar: null, progText: null, result: null, card: null, inputs: [], aborted: false };
+
+      // Derive per-property keep sets from group checkbox state.
+      const keepSetsOf = () => h.elements.map((el, ei) => {
+        const keep = new Array(el.properties.length).fill(false);
+        groups[ei].forEach((g, gi) => { if (s.dl.checked[ei][gi]) for (const i of g.members) keep[i] = true; });
+        return keep;
+      });
+      const shortType = (t) => String(t || "?")
+        .replace("float32", "float").replace("float64", "float")
+        .replace("int32", "int").replace("uint32", "uint")
+        .replace("int16", "short").replace("uint16", "ushort")
+        .replace("int8", "char").replace("uint8", "uchar");
+
+      function dlRefresh() {
+        const keepSets = keepSetsOf();
+        const plan = PLY.subsetPlan(h, keepSets, s.fileSize);
+        s.dl.plan = plan;
+        const totProps = h.elements.reduce((n, e) => n + e.properties.length, 0);
+        const totKept = keepSets.reduce((n, k) => n + k.reduce((m, b) => m + (b ? 1 : 0), 0), 0);
+        const conservative = !plan.exact || (s.sizeCheck && s.sizeCheck.status === "truncated");
+        refs.est.textContent = `${fmtBytes(s.fileSize)} → ${conservative ? "~" : ""}${fmtBytes(plan.estimatedOutSize)} · keeping ${totKept}/${totProps} props`;
+        h.elements.forEach((e, ei) => {
+          const pe = plan.elements[ei];
+          refs.sizes[ei].textContent = pe.hasList
+            ? "list rows"
+            : `${fmtInt(pe.rowBytes)} B/row → ${fmtInt(pe.newRowBytes)} B/row`;
+        });
+        if (plan.ok) { refs.reasons.hidden = true; }
+        else {
+          refs.reasons.textContent = "";
+          refs.reasons.append("Download infeasible: ");
+          for (const r of plan.reasons) refs.reasons.append(el("div", { text: r }));
+          refs.reasons.hidden = false;
+        }
+        refs.dlBtn.disabled = !plan.ok || s.dl.busy;
+      }
+
+      function dlSetAll(ei, on) {
+        if (s.dl.busy) return;
+        groups[ei].forEach((g, gi) => { s.dl.checked[ei][gi] = on; });
+        refs.card.querySelectorAll(`.propck[data-ei="${ei}"]`).forEach((inp) => {
+          inp.checked = on;
+          const chip = inp.closest(".prop-chip");
+          if (chip) chip.classList.toggle("on", on);
+        });
+        dlRefresh();
+      }
+
+      // Per-element subsections with group chips. Elements with no
+      // properties (some exporters emit bare elements like `face 0`) get
+      // no box — nothing to select — but refs.sizes stays index-aligned
+      // with h.elements for dlRefresh.
+      const subs = [];
+      h.elements.forEach((e, ei) => {
+        const sizeEl = el("span", { class: "dlsz" });
+        refs.sizes.push(sizeEl);
+        if (e.properties.length === 0) return;
+        const chips = groups[ei].map((g, gi) => {
+          const input = el("input", {
+            type: "checkbox", class: "propck", "data-ei": ei, "data-gi": gi,
+            checked: s.dl.checked[ei][gi] ? true : null,
+          });
+          const chip = el("label", { class: "prop-chip" + (s.dl.checked[ei][gi] ? " on" : "") },
+            input,
+            el("span", { class: "nm" }, g.label),
+            g.members.length > 1 ? el("span", { class: "ct" }, g.members.length) : null,
+            el("span", { class: "tp" }, shortType(g.type)));
+          if (g.sublabel) chip.title = `${g.sublabel} (${g.members.length} props)`;
+          refs.inputs.push(input);
+          return chip;
+        });
+        subs.push(el("div", { class: "dlsub" },
+          el("div", { class: "dlsubhead" },
+            el("span", { class: "nm" }, h.elementDisplay[ei]),
+            el("span", { class: "cnt" }, `× ${fmtInt(e.count)}`),
+            el("span", { class: "acts" },
+              el("button", { class: "btn mini", type: "button", onclick: () => dlSetAll(ei, true) }, "All"),
+              el("button", { class: "btn mini", type: "button", onclick: () => dlSetAll(ei, false) }, "None")),
+            sizeEl),
+          el("div", { class: "dlgrid" }, ...chips)));
+      });
+
+      const estEl = el("span", { class: "dlest", id: "dlest" });
+      refs.est = estEl;
+      const dlBtn = el("button", { class: "btn primary", type: "button", id: "dlbtn" }, "Download");
+      const abortBtn = el("button", { class: "btn danger", type: "button", id: "dlabort", hidden: true }, "Abort");
+      const progBar = el("div", { class: "dlbarfill", id: "dlbarfill" });
+      const progText = el("span", { class: "dlptext", id: "dlptext" });
+      const prog = el("div", { class: "dlprog", id: "dlprog", hidden: true, "aria-live": "polite" },
+        el("div", { class: "dlbar" }, progBar), progText);
+      const resultEl = el("div", { class: "dlresult", id: "dlresult", hidden: true });
+      const reasonsEl = el("div", { class: "dlreasons", id: "dlreasons", hidden: true });
+      refs.reasons = reasonsEl;
+
+      async function doDownload() {
+        if (s.dl.busy) return;
+        const keepSets = keepSetsOf();
+        const plan = PLY.subsetPlan(h, keepSets, s.fileSize);
+        if (!plan.ok) { dlRefresh(); return; }
+        s.dl.busy = true;
+        refs.aborted = false;
+        refs.dlBtn.hidden = true;
+        refs.abortBtn.hidden = false;
+        refs.prog.hidden = false;
+        refs.result.hidden = true;
+        refs.progBar.style.width = "0%";
+        refs.progText.textContent = "starting…";
+        for (const inp of refs.inputs) inp.disabled = true;
+        const t0 = performance.now();
+        let lastPct = -1, lastPaint = 0;
+        // Freeze guard (PLAN §12.4): both phases are cooperative — the
+        // streamer yields to the event loop every ~24 ms (wall-time budget)
+        // and the assembler after every 16 MB segment, so the bar keeps
+        // painting and the Abort click is handled in EVERY phase. The bar
+        // owns 0–90 % for streaming and 90–100 % for assembly (monotone —
+        // it never rewinds), so the user always sees work happening.
+        const STREAM_MAX = 90;
+        const yieldTick = () => new Promise((r) => setTimeout(r, 0));
+        const secsTxt = () => ((performance.now() - t0) / 1000).toFixed(1) + " s";
+        try {
+          const readChunk = async (start, end) =>
+            new Uint8Array(await s.file.slice(start, end).arrayBuffer());
+          // Phase 1 — stream the body in 8 MB windows.
+          const res = await PLY.streamSubset(readChunk, h, plan, {
+            fileSize: s.fileSize,
+            isAborted: () => refs.aborted,
+            yielder: yieldTick,
+            now: () => performance.now(),
+            onProgress: (p) => {
+              const now = performance.now();
+              const frac = p.rowsTotal > 0 ? p.rowsDone / p.rowsTotal : 1;
+              const pct = Math.min(STREAM_MAX, Math.round(100 * frac));
+              if (pct === lastPct && now - lastPaint < 200 && p.rowsDone !== p.rowsTotal) return;
+              lastPct = pct;
+              lastPaint = now;
+              refs.progBar.style.width = pct + "%";
+              refs.progText.textContent = `streaming ${pct}% · ${fmtInt(p.rowsDone)}/${fmtInt(p.rowsTotal)} rows · ${fmtBytes(p.bytesOut)} · ${secsTxt()}`;
+            },
+          });
+          if (state !== s) return; // superseded by a newer file
+          if (res.aborted) {
+            refs.result.hidden = false;
+            refs.result.textContent = "download aborted — nothing written";
+            toast("Download aborted");
+            return;
+          }
+          // Phase 2 — merge the per-row parts into Blob parts. Linear
+          // (every byte copied exactly once) and cooperative: byte progress,
+          // a yield after every segment, abort honored throughout.
+          const assembled = await PLY.coalesceParts(res.chunks, h.format.kind === "ascii", {
+            isAborted: () => refs.aborted,
+            yielder: yieldTick,
+            onProgress: (done, tot) => {
+              if (state !== s) return;
+              const frac = tot > 0 ? done / tot : 1;
+              refs.progBar.style.width = (STREAM_MAX + 10 * frac) + "%";
+              refs.progText.textContent = `assembling ${fmtBytes(done)} of ${fmtBytes(tot)} · ${secsTxt()}`;
+            },
+          });
+          res.chunks = null; // release the per-row parts (and the buffers they pin)
+          if (state !== s) return;
+          if (assembled.aborted) {
+            refs.result.hidden = false;
+            refs.result.textContent = "download aborted — nothing written";
+            toast("Download aborted");
+            return;
+          }
+          const secs = (performance.now() - t0) / 1000;
+          // Truncation: patch the header counts to the rows actually written
+          // (re-derive the header so the inspector comment stays consistent).
+          const claimed = plan.elements.reduce((n, pe) => n + pe.rows, 0);
+          const patched = res.perElementRows.some((r, i) => r !== h.elements[i].count);
+          const hdrHeader = patched
+            ? { ...h, elements: h.elements.map((e2, i) => ({ ...e2, count: res.perElementRows[i] })) }
+            : h;
+          const sh = PLY.subsetHeader(hdrHeader, keepSets);
+          const parts = [sh.text, ...assembled.parts];
+          const blob = new Blob(parts, { type: "application/octet-stream" });
+          const name = subsetName(s.fileName);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = name;
+          document.body.append(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+          const notes = [];
+          if (res.truncated) notes.push(`body truncated — wrote ${fmtInt(res.rowsWritten)} of ${fmtInt(claimed)} claimed rows`);
+          if (res.trailingBytes > 0) notes.push(`dropped ${fmtBytes(res.trailingBytes)} of trailing bytes beyond the claimed rows`);
+          if (res.shortLines > 0) notes.push(`${fmtInt(res.shortLines)} short line(s) emitted as-is`);
+          refs.result.hidden = false;
+          refs.result.textContent = `wrote ${fmtInt(res.rowsWritten)} rows in ${secs.toFixed(1)} s → ${name} (${fmtBytes(blob.size)})`
+            + (notes.length ? ` · ${notes.join(" · ")}` : "");
+          toast("Download started");
+        } catch (e) {
+          if (state === s) {
+            refs.result.hidden = false;
+            refs.result.textContent = `download failed: ${e.message || e}`;
+          }
+        } finally {
+          if (state === s) {
+            s.dl.busy = false;
+            refs.dlBtn.hidden = false;
+            refs.abortBtn.hidden = true;
+            refs.prog.hidden = true;
+            for (const inp of refs.inputs) inp.disabled = false;
+            dlRefresh();
+          }
+        }
+      }
+      refs.dlBtn = dlBtn;
+      refs.abortBtn = abortBtn;
+      refs.prog = prog;
+      refs.progBar = progBar;
+      refs.progText = progText;
+      refs.result = resultEl;
+      dlBtn.addEventListener("click", doDownload);
+      abortBtn.addEventListener("click", () => { refs.aborted = true; });
+
+      const cardEl = card(
+        [el("h2", { text: "Download PLY" }), el("span", { class: "actions" }, estEl, dlBtn, abortBtn)],
+        el("div", { id: "dlbody" },
+          reasonsEl,
+          ...subs,
+          prog,
+          resultEl,
+          el("p", { class: "note dlfoot" }, "Kept values are copied bit-exactly; no decoding, no re-encoding.")));
+      refs.card = cardEl;
+      // Delegated: one listener for every chip (and nothing else).
+      cardEl.addEventListener("change", (e) => {
+        const t = e.target;
+        if (!t.classList || !t.classList.contains("propck") || s.dl.busy) return;
+        const ei = Number(t.dataset.ei), gi = Number(t.dataset.gi);
+        s.dl.checked[ei][gi] = t.checked;
+        const chip = t.closest(".prop-chip");
+        if (chip) chip.classList.toggle("on", t.checked);
+        dlRefresh();
+      });
+      dlRefresh(); // initial estimate + feasibility
+      return cardEl;
+    }
+
     function renderCommentsCard(s) {
       const h = s.header;
       const n = h.comments.length + h.objInfo.length;
@@ -1374,6 +2232,18 @@
     }
 
     // ---------------- exports ----------------
+    // Output assembly lives in the core (see coalesceParts in the M8 section
+    // above): the streamer emits one part per row, and the core merge is
+    // linear (every byte copied exactly once), reports byte progress, yields
+    // to the event loop per segment, and honors Abort — the freeze guard.
+
+    // output.ply -> output.subset.ply (last extension dropped, name kept)
+    function subsetName(fileName) {
+      const b = (fileName || "file.ply").replace(/\\/g, "/").split("/").pop();
+      const dot = b.lastIndexOf(".");
+      return `${dot > 0 ? b.slice(0, dot) : b}.subset.ply`;
+    }
+
     function copyVertexCSV(s, vertexEl) {
       const layout = rowLayout(vertexEl);
       const sig = s.signature;
